@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Air dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --color-ink: #0f172a;
+      --color-mist: #f1f5f9;
+    }
+  </style>
+</head>
+<body class="min-h-full bg-mist text-ink antialiased">
+  <header class="border-b border-slate-200 bg-white">
+    <div class="mx-auto flex max-w-5xl items-center justify-between px-4 py-4">
+      <div class="flex items-center gap-3">
+        <span class="grid size-9 place-items-center rounded-lg bg-ink font-mono text-sm font-bold text-white">λ</span>
+        <div>
+          <h1 class="text-lg font-semibold leading-tight">Air dashboard</h1>
+          <p class="text-xs text-slate-500">served by a Bend program, styled with Tailwind</p>
+        </div>
+      </div>
+      <span id="status" class="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">connecting…</span>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-5xl space-y-8 px-4 py-8">
+    <section>
+      <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Server</h2>
+      <div id="stats" class="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <template id="stat-card">
+          <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <dt class="text-xs text-slate-500"></dt>
+            <dd class="mt-1 font-mono text-xl font-semibold"></dd>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <section class="grid gap-8 md:grid-cols-2">
+      <div>
+        <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Roadmap</h2>
+        <ul id="tasks" class="divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white shadow-sm"></ul>
+        <p class="mt-2 text-xs text-slate-500"><span id="done-count">0</span> of <span id="task-count">0</span> done</p>
+      </div>
+
+      <div class="space-y-6">
+        <div>
+          <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Path params</h2>
+          <form id="greet-form" class="flex gap-2">
+            <input id="greet-name" value="Bend" required
+                   class="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-ink focus:outline-none focus:ring-2 focus:ring-ink/20">
+            <button class="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 active:translate-y-px">
+              GET /api/hello/:name
+            </button>
+          </form>
+          <p id="greet-out" class="mt-2 font-mono text-sm text-slate-700">&nbsp;</p>
+        </div>
+
+        <div>
+          <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">POST a body</h2>
+          <form id="echo-form" class="space-y-2">
+            <textarea id="echo-body" rows="3" spellcheck="false"
+                      class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm focus:border-ink focus:outline-none focus:ring-2 focus:ring-ink/20">{"lang":"bend","fast":true}</textarea>
+            <button class="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 active:translate-y-px">
+              POST /api/echo
+            </button>
+          </form>
+          <pre id="echo-out" class="mt-2 overflow-x-auto rounded-lg bg-ink p-3 font-mono text-xs text-emerald-300">…</pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Request log</h2>
+      <ol id="log" class="space-y-1 font-mono text-xs text-slate-600"></ol>
+    </section>
+  </main>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

@@ -1,7 +1,11 @@
 import Base
 import ./air/text.bend as Text
 import ./air/chunk.bend as Chunk
+import ./air/json.bend as Json
 import ./air/http.bend as Http
+import ./air/form.bend as Form
+import ./air/negotiate.bend as Negotiate
+import ./air/disk.bend as Disk
 import ./air/router.bend as Router
 import ./air/race.bend as Race
 import ./air/drain.bend as Drain
@@ -362,6 +366,341 @@ law render_204_has_no_length:
   {Http.Response.render(Http.Response.empty(204), False{}, False{})
     == "HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n"
     : String}
+
+# JSON
+# ----
+
+law json_parse_object:
+  {Json.parse("{\"a\": [1, true, null, \"x\"]}")
+    == Some{Json.Obj{[("a", Json.Arr{[Json.Num{"1"}, Json.Boolean{True{}}, Json.Null{}, Json.Str{"x"}]})]}}
+    : Maybe<&2, Json.Value>}
+
+law json_parse_empty_containers:
+  {Json.parse(" { \"a\" : [ ] , \"b\" : { } } ")
+    == Some{Json.Obj{[("a", Json.Arr{[]}), ("b", Json.Obj{[]})]}}
+    : Maybe<&2, Json.Value>}
+
+law json_render_escapes:
+  {Json.render(Json.Str{"a\"b\\c\n\u{1}"}) == "\"a\\\"b\\\\c\\n\\u0001\"" : String}
+
+law json_render_nested:
+  {Json.render(Json.Obj{[("k", Json.Arr{[Json.Num{"1"}, Json.Null{}, Json.Boolean{False{}}]})]}) == "{\"k\":[1,null,false]}" : String}
+
+law json_parse_unicode_escape:
+  {Json.parse("\"\\u00e9\"") == Some{Json.Str{"é"}} : Maybe<&2, Json.Value>}
+
+law json_parse_surrogate_pair:
+  {Json.parse("\"\\ud83d\\ude00\"") == Some{Json.Str{"😀"}} : Maybe<&2, Json.Value>}
+
+law json_rejects_lone_surrogate:
+  {Json.parse("\"\\ud83d\"") == None{} : Maybe<&2, Json.Value>}
+
+law json_rejects_raw_control:
+  {Json.parse("\"a\tb\"") == None{} : Maybe<&2, Json.Value>}
+
+law json_rejects_trailing_comma:
+  {[Json.parse("[1,]"), Json.parse("{\"a\":1,}")] == [None{}, None{}] : List<&2, Maybe<&2, Json.Value>>}
+
+law json_rejects_mismatched_bracket:
+  {Json.parse("[}") == None{} : Maybe<&2, Json.Value>}
+
+law json_rejects_trailing_garbage:
+  {Json.parse("{} x") == None{} : Maybe<&2, Json.Value>}
+
+law json_rejects_depth:
+  {Json.parse(String.repeat("[", 65n) ++ String.repeat("]", 65n)) == None{} : Maybe<&2, Json.Value>}
+
+law json_accepts_depth_64:
+  {Maybe.is_some(&2, Json.Value, Json.parse(String.repeat("[", 64n) ++ String.repeat("]", 64n))) == True{} : Bool}
+
+law json_number_lexeme:
+  {Json.parse("-1.5e3") == Some{Json.Num{"-1.5e3"}} : Maybe<&2, Json.Value>}
+
+law json_rejects_bad_numbers:
+  {[Json.parse("01"), Json.parse("1."), Json.parse("-"), Json.parse("+1"), Json.parse("1e")]
+    == [None{}, None{}, None{}, None{}, None{}] : List<&2, Maybe<&2, Json.Value>>}
+
+law json_rejects_bad_literal:
+  {Json.parse("tru") == None{} : Maybe<&2, Json.Value>}
+
+law json_get_first_key:
+  {Json.get(Json.Obj{[("a", Json.Num{"1"}), ("a", Json.Num{"2"})]}, "a") == Some{Json.Num{"1"}} : Maybe<&2, Json.Value>}
+
+law json_u32_strict:
+  {[Json.u32(Json.Num{"42"}), Json.u32(Json.Num{"-1"}), Json.u32(Json.Str{"42"})] == [Some{42}, None{}, None{}] : List<&2, Maybe<&2, U32>>}
+
+law request_json_parses:
+  {Http.Request.json(Http.Request.with_body(request("POST /e HTTP/1.1\r\nContent-Type: application/json; charset=utf-8\r"), "{\"a\":1}"))
+    == Some{Json.Obj{[("a", Json.Num{"1"})]}} : Maybe<&2, Json.Value>}
+
+law request_json_needs_content_type:
+  {Http.Request.json(Http.Request.with_body(request("POST /e HTTP/1.1\r\nContent-Type: text/plain\r"), "{\"a\":1}"))
+    == None{} : Maybe<&2, Json.Value>}
+
+law response_of_json:
+  {Http.Response.body(Http.Response.of_json(Json.Obj{[("ok", Json.Boolean{True{}})]})) == "{\"ok\":true}" : String}
+
+# Forms
+# -----
+
+law split_seq_all_pieces:
+  {Text.split_seq_all("a--b--c--", "--") == ["a", "b", "c", ""] : List<&2, String>}
+
+law split_seq_all_no_hit:
+  {Text.split_seq_all("abc", "--") == ["abc"] : List<&2, String>}
+
+law query_all_repeats:
+  {Http.Request.query_all(request("GET /t?tag=a&tag=b%20c&x=1 HTTP/1.1\r"), "tag") == ["a", "b c"] : List<&2, String>}
+
+law query_all_absent:
+  {Http.Request.query_all(request("GET /t?x=1 HTTP/1.1\r"), "tag") == [] : List<&2, String>}
+
+law form_decodes:
+  {Http.Request.form(Http.Request.with_body(request("POST /f HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r"), "a=1&b=x+y%21"), "b")
+    == "x y!" : String}
+
+law form_needs_media_type:
+  {Http.Request.form(Http.Request.with_body(request("POST /f HTTP/1.1\r\nContent-Type: text/plain\r"), "a=1&b=x+y%21"), "b")
+    == "" : String}
+
+law form_all_repeats:
+  {Http.Request.form_all(Http.Request.with_body(request("POST /f HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r"), "t=a&t=b&u=c"), "t")
+    == ["a", "b"] : List<&2, String>}
+
+law media_type_strips_params:
+  {Http.Request.media_type(request("POST /f HTTP/1.1\r\nContent-Type: Multipart/Form-Data; boundary=xyz\r")) == "multipart/form-data" : String}
+
+law boundary_quoted:
+  {Form.boundary("multipart/form-data; boundary=\"ab c\"") == Some{"ab c"} : Maybe<&2, String>}
+
+law boundary_wrong_type:
+  {Form.boundary("application/json; boundary=x") == None{} : Maybe<&2, String>}
+
+law multipart_two_parts:
+  {Form.parse("multipart/form-data; boundary=XyZ", "--XyZ\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nhi\r\n--XyZ\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\ndata\r\n--XyZ--\r\n")
+    == Some{[Form.Part{"title", None{}, "text/plain", "hi"}, Form.Part{"f", Some{"a.txt"}, "text/plain", "data"}]}
+    : Maybe<&2, List<&2, Form.Part>>}
+
+law multipart_missing_blank:
+  {Form.parse("multipart/form-data; boundary=XyZ", "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\nx\r\n--XyZ--")
+    == None{} : Maybe<&2, List<&2, Form.Part>>}
+
+law multipart_unterminated:
+  {Form.parse("multipart/form-data; boundary=XyZ", "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\r\n")
+    == None{} : Maybe<&2, List<&2, Form.Part>>}
+
+law multipart_wrong_type:
+  {Form.parse("application/json", "--XyZ--") == None{} : Maybe<&2, List<&2, Form.Part>>}
+
+law multipart_field_and_file:
+  {[Form.field([Form.Part{"a", None{}, "text/plain", "x"}, Form.Part{"a", Some{"f.txt"}, "text/plain", "y"}], "a"),
+    Form.Part.body(Maybe.default(&2, Form.Part, Form.file([Form.Part{"a", None{}, "text/plain", "x"}, Form.Part{"a", Some{"f.txt"}, "text/plain", "y"}], "a"), Form.Part{"", None{}, "", ""}))]
+    == ["x", "y"] : List<&2, String>}
+
+# Request headers
+# ---------------
+
+law cookie_parses:
+  {Http.Request.cookie(request("GET / HTTP/1.1\r\nCookie: a=1; b=x=y\r"), "b") == "x=y" : String}
+
+law cookie_missing:
+  {Http.Request.cookie(request("GET / HTTP/1.1\r\nCookie: a=1\r"), "b") == "" : String}
+
+law cookies_in_order:
+  {Http.Request.cookies(request("GET / HTTP/1.1\r\nCookie: a=1; b=2\r")) == [("a", "1"), ("b", "2")] : List<&2, Text.Two()>}
+
+law negotiate_thousandths:
+  {[Negotiate.thousandths("1"), Negotiate.thousandths("0.8"), Negotiate.thousandths(".5"), Negotiate.thousandths("0.555"), Negotiate.thousandths("x")]
+    == [1000, 800, 500, 555, 0] : List<&2, U32>}
+
+law negotiate_q_order:
+  {Negotiate.pick("text/html;q=0.8, application/json", ["text/html", "application/json"], False{}) == Some{"application/json"} : Maybe<&2, String>}
+
+law negotiate_wildcard:
+  {Negotiate.pick("*/*", ["text/plain"], False{}) == Some{"text/plain"} : Maybe<&2, String>}
+
+law negotiate_specific_wins:
+  {Negotiate.pick("text/*;q=1, text/plain;q=0.2", ["text/plain", "text/html"], False{}) == Some{"text/html"} : Maybe<&2, String>}
+
+law negotiate_zero_excludes:
+  {Negotiate.pick("gzip;q=0, identity", ["gzip", "identity"], False{}) == Some{"identity"} : Maybe<&2, String>}
+
+law negotiate_absent_takes_first:
+  {Negotiate.pick("", ["a", "b"], False{}) == Some{"a"} : Maybe<&2, String>}
+
+law negotiate_nothing:
+  {Negotiate.pick("image/png", ["text/plain"], False{}) == None{} : Maybe<&2, String>}
+
+law negotiate_language_prefix:
+  {Negotiate.pick("en, fr;q=0.5", ["fr-ca", "en-us"], True{}) == Some{"en-us"} : Maybe<&2, String>}
+
+law negotiate_earliest_on_tie:
+  {Negotiate.pick("a, b", ["b", "a"], False{}) == Some{"b"} : Maybe<&2, String>}
+
+law client_ip_untrusted:
+  {Http.Request.client_ip(request("GET / HTTP/1.1\r\nX-Forwarded-For: 1.1.1.1\r"), Http.NoProxy{}) == None{} : Maybe<&2, String>}
+
+law client_ip_rightmost:
+  {Http.Request.client_ip(request("GET / HTTP/1.1\r\nX-Forwarded-For: 1.1.1.1, 2.2.2.2\r"), Http.Proxy{}) == Some{"2.2.2.2"} : Maybe<&2, String>}
+
+law client_ip_forwarded:
+  {Http.Request.client_ip(request("GET / HTTP/1.1\r\nForwarded: for=1.1.1.1, for=\"[2001:db8::1]:8080\";proto=https\r"), Http.Proxy{}) == Some{"2001:db8::1"} : Maybe<&2, String>}
+
+law client_ip_absent:
+  {Http.Request.client_ip(request("GET / HTTP/1.1\r"), Http.Proxy{}) == None{} : Maybe<&2, String>}
+
+law scheme_forwarded:
+  {[Http.Request.scheme(request("GET / HTTP/1.1\r\nX-Forwarded-Proto: HTTPS\r"), Http.Proxy{}),
+    Http.Request.scheme(request("GET / HTTP/1.1\r\nX-Forwarded-Proto: https\r"), Http.NoProxy{}),
+    Http.Request.scheme(request("GET / HTTP/1.1\r\nForwarded: proto=https\r"), Http.Proxy{})]
+    == ["https", "http", "https"] : List<&2, String>}
+
+law host_header:
+  {[Http.Request.host(request("GET / HTTP/1.1\r\nHost: example.com\r\nX-Forwarded-Host: app.example\r"), Http.NoProxy{}),
+    Http.Request.host(request("GET / HTTP/1.1\r\nHost: example.com\r\nX-Forwarded-Host: app.example\r"), Http.Proxy{})]
+    == ["example.com", "app.example"] : List<&2, String>}
+
+law accepts_language_header:
+  {Http.Request.accepts_language(request("GET / HTTP/1.1\r\nAccept-Language: pt-BR, en;q=0.5\r"), ["en-us", "pt-br"]) == Some{"pt-br"} : Maybe<&2, String>}
+
+# Files
+# -----
+
+law fnv1a_known:
+  {Text.fnv1a("a", Text.fnv_seed()) == 3826002220 : U32}
+
+law hex_show_pads:
+  {[Text.hex_show(255), Text.hex_show(3826002220)] == ["000000ff", "e40c292c"] : List<&2, String>}
+
+law etag_shape:
+  {Http.etag("hello") == "\"4f9f2cab-5\"" : String}
+
+law etag_counts_bytes:
+  {Http.etag("Olá") == "\"" ++ Text.hex_show(Text.fnv1a("Olá", Text.fnv_seed())) ++ "-4\"" : String}
+
+law with_etag_headers:
+  {[Http.Response.header(Http.Response.with_etag(Http.Response.text("hello")), "etag"),
+    Http.Response.header(Http.Response.with_etag(Http.Response.text("hello")), "accept-ranges")]
+    == ["\"4f9f2cab-5\"", "bytes"] : List<&2, String>}
+
+law parse_range_forms:
+  {[Http.Range.parse("bytes=0-9", 10), Http.Range.parse("bytes=5-", 10), Http.Range.parse("bytes=-3", 10), Http.Range.parse("", 10)]
+    == [Http.Range{0, 9}, Http.Range{5, 9}, Http.Range{7, 9}, Http.NoRange{}] : List<&2, Http.Range>}
+
+law parse_range_clamps:
+  {[Http.Range.parse("bytes=0-99", 10), Http.Range.parse("bytes=-99", 10)] == [Http.Range{0, 9}, Http.Range{0, 9}] : List<&2, Http.Range>}
+
+law parse_range_bad:
+  {[Http.Range.parse("bytes=9-3", 10), Http.Range.parse("bytes=10-", 10), Http.Range.parse("chars=0-1", 10), Http.Range.parse("bytes=0-1,3-4", 10), Http.Range.parse("bytes=-0", 10), Http.Range.parse("bytes=x-1", 10)]
+    == [Http.BadRange{}, Http.BadRange{}, Http.BadRange{}, Http.BadRange{}, Http.BadRange{}, Http.BadRange{}] : List<&2, Http.Range>}
+
+law conditional_304:
+  {Http.Response.render(Http.Response.conditional(request("GET / HTTP/1.1\r\nIf-None-Match: \"4f9f2cab-5\"\r"), Http.Response.with_etag(Http.Response.text("hello"))), False{}, True{})
+    == "HTTP/1.1 304 Not Modified\r\naccept-ranges: bytes\r\nconnection: keep-alive\r\ncontent-type: text/plain; charset=utf-8\r\netag: \"4f9f2cab-5\"\r\ncontent-length: 5\r\n\r\n" : String}
+
+law conditional_weak_and_list:
+  {Http.Response.status(Http.Response.conditional(request("GET / HTTP/1.1\r\nIf-None-Match: \"other\", W/\"4f9f2cab-5\"\r"), Http.Response.with_etag(Http.Response.text("hello")))) == 304 : U32}
+
+law conditional_star:
+  {Http.Response.status(Http.Response.conditional(request("GET / HTTP/1.1\r\nIf-None-Match: *\r"), Http.Response.with_etag(Http.Response.text("hello")))) == 304 : U32}
+
+law conditional_miss:
+  {[Http.Response.status(Http.Response.conditional(request("GET / HTTP/1.1\r\nIf-None-Match: \"nope\"\r"), Http.Response.with_etag(Http.Response.text("hello")))),
+    Http.Response.status(Http.Response.conditional(request("POST / HTTP/1.1\r\nIf-None-Match: \"4f9f2cab-5\"\r"), Http.Response.with_etag(Http.Response.text("hello")))),
+    Http.Response.status(Http.Response.conditional(request("GET / HTTP/1.1\r"), Http.Response.with_etag(Http.Response.text("hello"))))]
+    == [200, 200, 200] : List<&2, U32>}
+
+law ranged_206:
+  {[Http.Response.body(Http.Response.ranged(request("GET / HTTP/1.1\r\nRange: bytes=0-4\r"), Http.Response.text("hello world"))),
+    Http.Response.header(Http.Response.ranged(request("GET / HTTP/1.1\r\nRange: bytes=0-4\r"), Http.Response.text("hello world")), "content-range"),
+    U32.show(Http.Response.status(Http.Response.ranged(request("GET / HTTP/1.1\r\nRange: bytes=0-4\r"), Http.Response.text("hello world"))))]
+    == ["hello", "bytes 0-4/11", "206"] : List<&2, String>}
+
+law ranged_suffix:
+  {Http.Response.body(Http.Response.ranged(request("GET / HTTP/1.1\r\nRange: bytes=-5\r"), Http.Response.text("hello world"))) == "world" : String}
+
+law ranged_416:
+  {[U32.show(Http.Response.status(Http.Response.ranged(request("GET / HTTP/1.1\r\nRange: bytes=20-\r"), Http.Response.text("hello world")))),
+    Http.Response.header(Http.Response.ranged(request("GET / HTTP/1.1\r\nRange: bytes=20-\r"), Http.Response.text("hello world")), "content-range")]
+    == ["416", "bytes */11"] : List<&2, String>}
+
+law ranged_multibyte_416:
+  {Http.Response.status(Http.Response.ranged(request("GET / HTTP/1.1\r\nRange: bytes=0-1\r"), Http.Response.text("héllo"))) == 416 : U32}
+
+law ranged_passes_other_methods:
+  {Http.Response.status(Http.Response.ranged(request("POST / HTTP/1.1\r\nRange: bytes=0-1\r"), Http.Response.text("hello"))) == 200 : U32}
+
+# Streaming
+# ---------
+
+law chunk_frames:
+  {[Http.chunk("Wiki"), Http.chunk("Olá"), Http.chunk("")] == ["4\r\nWiki\r\n", "4\r\nOlá\r\n", ""] : List<&2, String>}
+
+law chunk_size_is_hex:
+  {Http.chunk(String.repeat("x", 26n)) == "1a\r\n" ++ String.repeat("x", 26n) ++ "\r\n" : String}
+
+law last_chunk_ends:
+  {Http.last_chunk() == "0\r\n\r\n" : String}
+
+law sse_event_format:
+  {Http.Sse.event("tick", "a\nb") == "event: tick\ndata: a\ndata: b\n\n" : String}
+
+law sse_data_format:
+  {Http.Sse.data("x") == "data: x\n\n" : String}
+
+# Responses
+# ---------
+
+law cookie_render_defaults:
+  {Http.Cookie.render(Http.Cookie.new("sid", "abc")) == "sid=abc; Path=/; HttpOnly; SameSite=Lax" : String}
+
+law cookie_render_full:
+  {Http.Cookie.render(Http.Cookie.same_site(Http.Cookie.secure(Http.Cookie.with_max_age(Http.Cookie.with_domain(Http.Cookie.with_path(Http.Cookie.new("a", "1"), "/app"), "example.com"), 3600), True{}), "Strict"))
+    == "a=1; Path=/app; Domain=example.com; Max-Age=3600; Secure; HttpOnly; SameSite=Strict" : String}
+
+law cookie_same_site_none_forces_secure:
+  {Http.Cookie.render(Http.Cookie.http_only(Http.Cookie.same_site(Http.Cookie.new("a", "1"), "None"), False{}))
+    == "a=1; Path=/; Secure; SameSite=None" : String}
+
+law cookie_session_has_no_age:
+  {Http.Cookie.render(Http.Cookie.with_max_age(Http.Cookie.new("a", "1"), 0)) == "a=1; Path=/; HttpOnly; SameSite=Lax" : String}
+
+law expire_cookie_line:
+  {Http.Response.render(Http.Response.expire_cookie(Http.Response.empty(204), "sid"), False{}, False{})
+    == "HTTP/1.1 204 No Content\r\nconnection: close\r\nset-cookie: sid=; Path=/; Max-Age=0\r\n\r\n" : String}
+
+law render_two_cookies_in_order:
+  {Http.Response.render(Http.Response.with_cookie(Http.Response.with_cookie(Http.Response.text("x"), Http.Cookie.new("a", "1")), Http.Cookie.new("b", "2")), False{}, True{})
+    == "HTTP/1.1 200 OK\r\nconnection: keep-alive\r\ncontent-type: text/plain; charset=utf-8\r\nset-cookie: a=1; Path=/; HttpOnly; SameSite=Lax\r\nset-cookie: b=2; Path=/; HttpOnly; SameSite=Lax\r\ncontent-length: 1\r\n\r\nx" : String}
+
+law with_type_adds_charset:
+  {Http.Response.header(Http.Response.with_type(Http.Response.empty(200), "text/css"), "content-type") == "text/css; charset=utf-8" : String}
+
+law with_type_keeps_binary:
+  {Http.Response.header(Http.Response.with_type(Http.Response.empty(200), "image/png"), "content-type") == "image/png" : String}
+
+law with_type_keeps_params:
+  {Http.Response.header(Http.Response.with_type(Http.Response.empty(200), "text/plain; charset=latin1"), "content-type") == "text/plain; charset=latin1" : String}
+
+law send_infers_html:
+  {Http.Response.header(Http.Response.send("  <h1>x</h1>"), "content-type") == "text/html; charset=utf-8" : String}
+
+law send_infers_json:
+  {Http.Response.header(Http.Response.send("[1]"), "content-type") == "application/json; charset=utf-8" : String}
+
+law send_infers_text:
+  {Http.Response.header(Http.Response.send("hello"), "content-type") == "text/plain; charset=utf-8" : String}
+
+law see_other_status:
+  {[Http.Response.status(Http.Response.see_other("/x")), Http.Response.status(Http.Response.moved("/x")), Http.Response.status(Http.Response.temporary_redirect("/x")), Http.Response.status(Http.Response.permanent_redirect("/x")), Http.Response.status(Http.Response.redirect("/x"))]
+    == [303, 301, 307, 308, 302] : List<&2, U32>}
+
+law see_other_location:
+  {Http.Response.header(Http.Response.see_other("/x"), "location") == "/x" : String}
+
+law reasons_added:
+  {[Http.Status.reason(206), Http.Status.reason(303), Http.Status.reason(307), Http.Status.reason(416)]
+    == ["Partial Content", "See Other", "Temporary Redirect", "Range Not Satisfiable"] : List<&2, String>}
 
 # Timeouts
 # --------

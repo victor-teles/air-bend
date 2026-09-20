@@ -16,6 +16,16 @@ accepts, not that a request failed once accepted.
 Bend's runtime listens with a backlog of 16 (`effs/tcp_listen.c`), which is
 what caps Air at high connection counts.
 
+## 2026-09-20 (after Tier 3, Bend 2.0.19), Apple Silicon, 32 connections, 5s
+
+Same load as below, after the request/response work and the toolchain
+update. The streaming path is separate from this one and does not touch it.
+
+| target                | req/s | p50 ms | errors |
+| --------------------- | ----: | -----: | -----: |
+| Air GET /hello/:name  | 30458 | 1.05   | 0      |
+| Air POST /echo 1KB    | 12644 | 2.55   | 0      |
+
 ## 2026-09-19 (after Tier 2 routing), Apple Silicon, Bend 2.0.10, Node 24, 32 connections, 5s
 
 Keep-alive is on for both servers now. The Tier 1 binary (before path

@@ -69,6 +69,30 @@ def split_seq(s: String, +sep: String, acc: String, hit: Bool) -> Maybe<&2, Two(
 def split_str(+s: String, +sep: String) -> Maybe<&2, Two()>:
   split_seq(s, sep, SNil{}, String.starts_with(s, sep))
 
+# Splits on every occurrence of the substring `sep`, tail-recursively.
+# `hit` says whether `s` starts with `sep`; `skip` counts the characters
+# of a matched `sep` still to pass over, during which `hit` is ignored.
+def split_seq_all.go(s: String, +sep: String, line: String, acc: List<&2, String>, +tail_len: Nat, skip: Nat, hit: Bool) -> List<&2, String>:
+  match s skip hit:
+    case SNil{} _ _:
+      List.reverse(&2, String, Con{String.reverse(line), acc})
+    case SCon{h, +t} 1n+k _:
+      split_seq_all.go(t, sep, line, acc, tail_len, k, String.starts_with(t, sep))
+    case SCon{h, +t} 0n True{}:
+      split_seq_all.go(t, sep, SNil{}, Con{String.reverse(line), acc}, tail_len, tail_len, String.starts_with(t, sep))
+    case SCon{h, +t} 0n False{}:
+      split_seq_all.go(t, sep, SCon{h, line}, acc, tail_len, 0n, String.starts_with(t, sep))
+
+def pred(n: Nat) -> Nat:
+  match n:
+    case 0n:
+      0n
+    case 1n+p:
+      p
+
+def split_seq_all(+s: String, +sep: String) -> List<&2, String>:
+  split_seq_all.go(s, sep, SNil{}, Nil{}, pred(String.length(sep)), 0n, Bool.and(non_empty(sep), String.starts_with(s, sep)))
+
 # Splits on every `sep`. Tail-recursive, unlike `String.split`, so it is
 # safe on a request head. `hit` says whether `s` starts with `sep`.
 def split_all.go(s: String, +sep: Char, line: String, acc: List<&2, String>, hit: Bool) -> List<&2, String>:
@@ -155,6 +179,32 @@ def digits.go(s: String, +acc: U32, ok: Bool) -> Maybe<&2, U32>:
 def digits(+s: String) -> Maybe<&2, U32>:
   digits.go(s, 0, non_empty(s))
 
+# The lowercase hex digit for 0..15.
+def hex_digit(+n: U32) -> Char:
+  Char.from_u32(Bool.pick(U32, U32.is_lt(n, 10), U32.add(48, n), U32.add(87, n)))
+
+def hex_show.go(digits: Nat, +n: U32, acc: String) -> String:
+  match digits:
+    case 0n:
+      acc
+    case 1n+k:
+      hex_show.go(k, U32.div(n, 16), SCon{hex_digit(U32.mod(n, 16)), acc})
+
+# Eight lowercase hex digits, zero-padded.
+def hex_show(n: U32) -> String:
+  hex_show.go(8n, n, SNil{})
+
+# FNV-1a over the code points; start `acc` at `fnv_seed()`.
+def fnv1a(s: String, +acc: U32) -> U32:
+  match s:
+    case SNil{}:
+      acc
+    case SCon{h, t}:
+      fnv1a(t, U32.mul(U32.xor(acc, Char.to_u32(h)), 16777619))
+
+def fnv_seed() -> U32:
+  2166136261
+
 # The value of a hex digit, or 16 when it is not one.
 def hex_val(+x: U32) -> U32:
   Bool.pick(U32, Bool.and(U32.is_ge(x, 48), U32.is_le(x, 57)), U32.sub(x, 48),
@@ -176,16 +226,16 @@ def hex(+s: String) -> Maybe<&2, U32>:
 
 # UTF-8 byte count, which is what Content-Length counts.
 def char_bytes(+x: U32) -> U32:
-  Bool.pick(U32, (x < 128 : U32), 1,
-    Bool.pick(U32, (x < 2048 : U32), 2,
-      Bool.pick(U32, (x < 65536 : U32), 3, 4)))
+  Bool.pick(U32, U32.is_lt(x, 128), 1,
+    Bool.pick(U32, U32.is_lt(x, 2048), 2,
+      Bool.pick(U32, U32.is_lt(x, 65536), 3, 4)))
 
 def byte_length(s: String, acc: U32) -> U32:
   match s:
     case SNil{}:
       acc
     case SCon{h, t}:
-      byte_length(t, (acc + char_bytes(Char.to_u32(h)) : U32))
+      byte_length(t, U32.add(acc, char_bytes(Char.to_u32(h))))
 
 # The first `n` bytes of a string and what follows them. `TakeNeed` asks
 # for more input; `TakeBad` means byte `n` falls inside a character.

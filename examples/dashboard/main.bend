@@ -1,6 +1,5 @@
 import Base
 import ../../air.bend as Air
-import ../../air/text.bend as Text
 
 # dashboard
 # =========
@@ -14,149 +13,91 @@ import ../../air/text.bend as Text
 #
 # and open http://localhost:8080.
 
-# Reading a file
-# --------------
-#
-# `File.read` hands back the handle beside each chunk; read until a chunk
-# is empty, then close. `Text.append` keeps big files off the stack.
-
-def OpenR() -> Type:
-  Result<&1, &1, U32 & String, File>
-
-def ReadR() -> Type:
-  File & Result<&1, &1, U32 & String, String>
-
-type FileState is Type:
-  Reading{file: File, acc: String}
-  Finished{file: File, acc: String}
-
-def read_more(file: File, acc: String, eof: Bool) -> FileState:
-  match eof:
-    case True{}:
-      Finished{file, acc}
-    case False{}:
-      Reading{file, acc}
-
-def read_step(acc: String, r: ReadR()) -> FileState:
-  (file, res) = r
-  match res:
-    case Fail{e}:
-      Finished{file, acc}
-    case Done{+chunk}:
-      read_more(file, Text.append(acc, chunk), String.is_empty(chunk))
-
-def read_loop(fuel: Nat, state: FileState) -> IO(String):
-  match fuel state:
-    case _ Finished{file, acc}:
-      do IO<String>:
-        File.close(file)
-        return acc
-    case 0n Reading{file, acc}:
-      do IO<String>:
-        File.close(file)
-        return acc
-    case 1n+p Reading{file, acc}:
-      do IO<String>:
-        r : ReadR() <- File.read(file, 65536)
-        read_loop(p, read_step(acc, r))
-
-def read_opened(r: OpenR()) -> IO(String):
-  match r:
-    case Fail{e}:
-      IO.pure(String, "")
-    case Done{file}:
-      read_loop(1000n, Reading{file, ""})
-
-# The first path is right when run from this folder, the second from the
-# repo root. A file found at neither reads as "".
-def read_fallback(fallback: String, r: OpenR()) -> IO(String):
-  match r:
-    case Fail{e}:
-      IO.bind(OpenR(), String, File.open(fallback, "r"), read_opened)
-    case Done{file}:
-      read_loop(1000n, Reading{file, ""})
-
-def read_public(+name: String) -> IO(String):
-  IO.bind(OpenR(), String, File.open("public/" ++ name, "r"), read_fallback("examples/dashboard/public/" ++ name))
-
 # Static routes
 # -------------
+#
+# `Air.Response.file` reads the file, tags it with an ETag, and answers
+# 304 or 206 when the browser asks. The first path is right when run
+# from this folder, the second from the repo root.
 
-# An empty file, or a missing one, answers 404. Matching on the string
-# avoids copying a body that may be large.
-def with_type(body: String, mime: String) -> Air.Response():
-  match body:
-    case SNil{}:
-      Air.Response.not_found()
-    case SCon{h, t}:
-      Air.Response.with_header(Air.Response.new(200, SCon{h, t}), "content-type", mime)
+def serve_file.retry(+req: Air.Request(), name: String, mime: String, first: Air.Response(), missing: Bool) -> IO(Air.Response()):
+  match missing:
+    case True{}:
+      Air.Response.file(req, "examples/dashboard/public/" ++ name, mime)
+    case False{}:
+      IO.pure(Air.Response(), first)
 
-def serve_file.fin(mime: String, body: String) -> IO(Air.Response()):
-  IO.pure(Air.Response(), with_type(body, mime))
+def serve_file.fin(+req: Air.Request(), name: String, mime: String, first: Air.Response()) -> IO(Air.Response()):
+  +first = first
+  serve_file.retry(req, name, mime, first, U32.is_eq(Air.Response.status(first), 404))
 
-def serve_file(name: String, mime: String) -> IO(Air.Response()):
-  IO.bind(String, Air.Response(), read_public(name), serve_file.fin(mime))
+def serve_file(req: Air.Request(), +name: String, +mime: String) -> IO(Air.Response()):
+  +req = req
+  IO.bind(Air.Response(), Air.Response(), Air.Response.file(req, "public/" ++ name, mime), serve_file.fin(req, name, mime))
 
 def index(req: Air.Request()) -> IO(Air.Response()):
-  serve_file("index.html", "text/html; charset=utf-8")
+  serve_file(req, "index.html", "text/html")
 
 def script(req: Air.Request()) -> IO(Air.Response()):
-  serve_file("app.js", "text/javascript; charset=utf-8")
+  serve_file(req, "app.js", "text/javascript")
 
 # JSON routes
 # -----------
+#
+# Responses are built as values and rendered by Air, so a quote in a
+# title comes out escaped.
 
-def json_str(s: String) -> String:
-  "\"" ++ s ++ "\""
-
-def field(key: String, value: String) -> String:
-  json_str(key) ++ ":" ++ value
-
-def json_bool(b: Bool) -> String:
-  match b:
-    case True{}:
-      "true"
-    case False{}:
-      "false"
-
-def task(id: U32, title: String, done: Bool) -> String:
-  "{" ++ field("id", U32.show(id)) ++ "," ++ field("title", json_str(title)) ++ "," ++ field("done", json_bool(done)) ++ "}"
+def task(id: U32, title: String, done: Bool) -> Air.Json():
+  Air.Json.obj([
+    Air.Json.field("id", Air.Json.of_u32(id)),
+    Air.Json.field("title", Air.Json.of_str(title)),
+    Air.Json.field("done", Air.Json.of_bool(done))
+  ])
 
 def stats.fin(now: Nat) -> IO(Air.Response()):
-  IO.pure(Air.Response(), Air.Response.json(
-    "{" ++ field("server", json_str("air")) ++ ","
-        ++ field("bend", json_str("2.0.10")) ++ ","
-        ++ field("uptime_ms", Nat.show(now)) ++ ","
-        ++ field("requests_per_conn", "100000") ++ ","
-        ++ field("max_body", "1048576") ++ "}"))
+  IO.pure(Air.Response(), Air.Response.of_json(Air.Json.obj([
+    Air.Json.field("server", Air.Json.of_str("air")),
+    Air.Json.field("bend", Air.Json.of_str("2.0.10")),
+    Air.Json.field("uptime_ms", Air.Json.num(Nat.show(now))),
+    Air.Json.field("requests_per_conn", Air.Json.of_u32(100000)),
+    Air.Json.field("max_body", Air.Json.of_u32(1048576))
+  ])))
 
 def stats(req: Air.Request()) -> IO(Air.Response()):
   IO.bind(Nat, Air.Response(), IO.now(), stats.fin)
 
 def tasks(req: Air.Request()) -> IO(Air.Response()):
-  IO.pure(Air.Response(), Air.Response.json(
-    "[" ++ task(1, "Parse the request line", True{}) ++ ","
-        ++ task(2, "Decode chunked bodies", True{}) ++ ","
-        ++ task(3, "Serve a page with Tailwind", True{}) ++ ","
-        ++ task(4, "Percent-decode paths", True{}) ++ ","
-        ++ task(5, "Static file middleware", False{}) ++ "]"))
+  IO.pure(Air.Response(), Air.Response.of_json(Air.Json.arr([
+    task(1, "Parse the request line", True{}),
+    task(2, "Decode chunked bodies", True{}),
+    task(3, "Serve a page with Tailwind", True{}),
+    task(4, "Percent-decode paths", True{}),
+    task(5, "Parse JSON bodies", True{}),
+    task(6, "Static file middleware", False{})
+  ])))
 
 def greet(req: Air.Request()) -> IO(Air.Response()):
-  IO.pure(Air.Response(), Air.Response.json(
-    "{" ++ field("greeting", json_str("Hello, " ++ Air.Request.param(req, "name") ++ "!")) ++ "}"))
+  IO.pure(Air.Response(), Air.Response.of_json(Air.Json.obj([
+    Air.Json.field("greeting", Air.Json.of_str("Hello, " ++ Air.Request.param(req, "name") ++ "!"))
+  ])))
 
-# Echoes the JSON body back, wrapped. No JSON parser yet, so the body is
-# returned as it came.
+# Echoes the JSON body back, wrapped; a body that is not JSON is a 400.
+def echo.fin(parsed: Maybe<&2, Air.Json()>) -> Air.Response():
+  match parsed:
+    case None{}:
+      Air.Response.bad_request()
+    case Some{v}:
+      Air.Response.of_json(Air.Json.obj([Air.Json.field("received", v)]))
+
 def echo(req: Air.Request()) -> IO(Air.Response()):
-  IO.pure(Air.Response(), Air.Response.json(
-    "{" ++ field("received", Air.Request.body(req)) ++ "}"))
+  IO.pure(Air.Response(), echo.fin(Air.Request.json(req)))
 
 # Flips the server's stop switch: no new connections are accepted, the
 # requests in flight finish, and `main` goes on to exit.
 def shutdown(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
   do IO<Air.Response()>:
     Air.Switch.flip(switch)
-    return Air.Response.json("{" ++ field("stopping", "true") ++ "}")
+    return Air.Response.of_json(Air.Json.obj([Air.Json.field("stopping", Air.Json.of_bool(True{}))]))
 
 def pages() -> List<Air.Route()>:
   [

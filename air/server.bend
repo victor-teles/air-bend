@@ -445,18 +445,168 @@ def refuse.go(+ctx: Ctx, sock: Socket, method: String, path: String, +status: U3
 def refuse(+ctx: Ctx, sock: Socket, method: String, path: String, +status: U32) -> IO(Next):
   refuse.go(ctx, sock, method, path, status, U32.is_eq(status, 0))
 
+# Streaming
+# ---------
+#
+# A `Stream` body is a channel the handler's producer writes to. The
+# server writes the head, then each piece as one chunk, until the
+# producer closes the channel. Every wait and write is under the send
+# timeout, re-armed per piece. The channel is closed on every exit, so
+# a producer whose client went away sees its next send answer False.
+
+# Chunks written on one stream before the connection is closed.
+def max_chunks() -> Nat:
+  1000000n
+
+def drop_piece(got: Maybe<&1, String>) -> IO(Unit):
+  IO.pure(Unit, Unit{})
+
+def frame(chunked: Bool, piece: String) -> String:
+  match chunked:
+    case True{}:
+      Http.chunk(piece)
+    case False{}:
+      piece
+
+# The stream between pieces: still flowing with the socket in hand, or
+# finished with what the connection does next.
+type Streaming is Type:
+  Flowing{sock: Socket}
+  Ended{next: Next}
+
+def ended(next: IO(Next)) -> IO(Streaming):
+  IO.bind(Next, Streaming, next, n => IO.pure(Streaming, Ended{n}))
+
+def stream_sent.go(+chan: Chan(String), v: SendR()) -> IO(Streaming):
+  (sock, res) = v
+  match res:
+    case Done{u}:
+      IO.pure(Streaming, Flowing{sock})
+    case Fail{e}:
+      do IO<Streaming>:
+        Chan.close(String, chan)
+        ended(stop(sock))
+
+def stream_sent(+chan: Chan(String), r: SendRaced()) -> IO(Streaming):
+  match r:
+    case Race.Won{v}:
+      stream_sent.go(chan, v)
+    case Race.Lost{}:
+      do IO<Streaming>:
+        Chan.close(String, chan)
+        ended(late("stream"))
+
+# The producer closed the channel: end the chunked body, or, for an
+# HTTP/1.0 client, close the connection that delimits it.
+def stream_end(+ctx: Ctx, +gen: U32, sock: Socket, chunked: Bool, +keep: Bool, rest: String) -> IO(Streaming):
+  match chunked:
+    case True{}:
+      do IO<Streaming>:
+        r : SendRaced() <- send_within(ctx, gen, sock, Http.last_chunk())
+        ended(after_send(r, keep, rest))
+    case False{}:
+      ended(stop(sock))
+
+def stream_piece(+ctx: Ctx, +chan: Chan(String), +chunked: Bool, +keep: Bool, rest: String, sock: Socket, +gen: U32, got: Maybe<&1, String>) -> IO(Streaming):
+  match got:
+    case None{}:
+      stream_end(ctx, gen, sock, chunked, keep, rest)
+    case Some{piece}:
+      do IO<Streaming>:
+        r : SendRaced() <- send_within(ctx, gen, sock, frame(chunked, piece))
+        stream_sent(chan, r)
+
+def stream_got(+ctx: Ctx, +chan: Chan(String), +chunked: Bool, +keep: Bool, rest: String, sock: Socket, +gen: U32, r: Race.Raced<Maybe<&1, String>>) -> IO(Streaming):
+  match r:
+    case Race.Won{got}:
+      stream_piece(ctx, chan, chunked, keep, rest, sock, gen, got)
+    case Race.Lost{}:
+      do IO<Streaming>:
+        Chan.close(String, chan)
+        Socket.close(sock)
+        ended(late("stream"))
+
+def stream_wait(+ctx: Ctx, +chan: Chan(String), +chunked: Bool, +keep: Bool, rest: String, sock: Socket, +gen: U32) -> IO(Streaming):
+  do IO<Streaming>:
+    r : Race.Raced<Maybe<&1, String>> <- Race.within(Maybe<&1, String>, drop_piece, Ctx.clock(ctx), gen, Chan.recv(String, chan))
+    stream_got(ctx, chan, chunked, keep, rest, sock, gen, r)
+
+# One piece: wait for it and write it, both under the send timeout.
+def stream_step(+ctx: Ctx, +chan: Chan(String), +chunked: Bool, +keep: Bool, rest: String, sock: Socket) -> IO(Streaming):
+  do IO<Streaming>:
+    gen : U32 <- arm(ctx, Timeouts.send(Ctx.timeouts(ctx)))
+    stream_wait(ctx, chan, chunked, keep, rest, sock, gen)
+
+def stream_loop(fuel: Nat, +ctx: Ctx, +chan: Chan(String), +chunked: Bool, +keep: Bool, +rest: String, st: Streaming) -> IO(Next):
+  match fuel st:
+    case _ Ended{next}:
+      IO.pure(Next, next)
+    case 0n Flowing{sock}:
+      do IO<Next>:
+        Chan.close(String, chan)
+        stop(sock)
+    case 1n+p Flowing{sock}:
+      do IO<Next>:
+        st2 : Streaming <- stream_step(ctx, chan, chunked, keep, rest, sock)
+        stream_loop(p, ctx, chan, chunked, keep, rest, st2)
+
+def stream_started.go(+ctx: Ctx, +chan: Chan(String), +chunked: Bool, +keep: Bool, +rest: String, v: SendR()) -> IO(Next):
+  (sock, res) = v
+  match res:
+    case Done{u}:
+      stream_loop(max_chunks(), ctx, chan, chunked, keep, rest, Flowing{sock})
+    case Fail{e}:
+      do IO<Next>:
+        Chan.close(String, chan)
+        stop(sock)
+
+# After the head: a HEAD request is done (the producer is told by the
+# closed channel), anything else streams.
+def stream_started(+ctx: Ctx, +chan: Chan(String), +chunked: Bool, +keep: Bool, +rest: String, head_only: Bool, r: SendRaced()) -> IO(Next):
+  match head_only r:
+    case _ Race.Lost{}:
+      do IO<Next>:
+        Chan.close(String, chan)
+        late("reply")
+    case True{} Race.Won{v}:
+      do IO<Next>:
+        Chan.close(String, chan)
+        after_send.go(v, keep, rest)
+    case False{} Race.Won{v}:
+      stream_started.go(ctx, chan, chunked, keep, rest, v)
+
+# Writes the head of a streamed response, then its pieces. An HTTP/1.0
+# client gets no chunk framing and the connection closes after.
+def stream.go(+ctx: Ctx, sock: Socket, +req: Http.Request, +rest: String, +res: Http.Response, +chan: Chan(String), +chunked: Bool, +keep: Bool) -> IO(Next):
+  do IO<Next>:
+    gen : U32 <- arm(ctx, Timeouts.send(Ctx.timeouts(ctx)))
+    r : SendRaced() <- send_within(ctx, gen, sock, Http.Response.render_head(res, keep, chunked))
+    stream_started(ctx, chan, chunked, keep, rest, Http.Method.is_eq(Http.Request.method(req), Http.HEAD{}), r)
+
+def stream(+ctx: Ctx, sock: Socket, +req: Http.Request, +rest: String, +res: Http.Response, chan: Chan(String)) -> IO(Next):
+  +ck = Bool.not(String.eq(Http.Request.version(req), "HTTP/1.0"))
+  stream.go(ctx, sock, req, rest, res, chan, ck,
+    Bool.and(ck, Bool.and(Http.Request.keep_alive(req), Bool.not(Text.has_token(Http.Response.header(res, "connection"), "close")))))
+
+def respond.pick(+ctx: Ctx, sock: Socket, +req: Http.Request, rest: String, +res: Http.Response, payload: Http.Body) -> IO(Next):
+  match payload:
+    case Http.Whole{text}:
+      send(
+        ctx,
+        sock,
+        rest,
+        Http.Method.is_eq(Http.Request.method(req), Http.HEAD{}),
+        Bool.and(Http.Request.keep_alive(req), Bool.not(Text.has_token(Http.Response.header(res, "connection"), "close"))),
+        res)
+    case Http.Stream{chan}:
+      stream(ctx, sock, req, rest, res, chan)
+
 # Writes the app's response. The connection stays open when both the
 # request and the response allow it.
 def respond(+ctx: Ctx, sock: Socket, +req: Http.Request, rest: String, +res: Http.Response) -> IO(Next):
   do IO<Next>:
     log(Http.Method.show(Http.Request.method(req)), Http.Request.path(req), Http.Response.status(res))
-    send(
-      ctx,
-      sock,
-      rest,
-      Http.Method.is_eq(Http.Request.method(req), Http.HEAD{}),
-      Bool.and(Http.Request.keep_alive(req), Bool.not(Text.has_token(Http.Response.header(res, "connection"), "close"))),
-      res)
+    respond.pick(ctx, sock, req, rest, res, Http.Response.payload(res))
 
 # App
 # ---

@@ -33,8 +33,8 @@ a renderer that escapes correctly, and the two request/response hooks.
 Decisions:
 
 - **Numbers keep their lexeme.** Bend has `U32` and `F32` only, so `Num{text}`
-  stores the digits as written and `Json.u32(v)` / `Json.f32(v)` convert on
-  demand. Nothing is lost on round-trip and big integers are not silently
+  stores the digits as written and `Json.u32(v)` converts on demand (Base has
+  no `F32.read`, verified 2026-09-20). Nothing is lost on round-trip and big integers are not silently
   truncated.
 - **Objects are ordered pair lists**, not a `Map`: JSON order is meaningful to
   humans and a `Map` would sort keys. `Json.get(obj, key)` scans; objects are
@@ -123,8 +123,7 @@ a field, as `Text.Two()` does for string pairs, or declare
 `Field()` as a def alias after `Value`.
 
 Accessors: `get(v, key) -> Maybe<&2, Value>` (first matching key), `at(v, i)`,
-`str(v) -> Maybe String`, `u32(v)`, `f32(v)` (via `U32.read` / `F32.read`
-if Base has it; check `bend base F32`), `bool(v)`, `is_null(v)`, `items(v)`,
+`str(v) -> Maybe String`, `u32(v)` (via `Text.digits`, strict; Base has no `F32.read`, so no `f32` accessor: apps parse the lexeme themselves), `bool(v)`, `is_null(v)`, `items(v)`,
 `fields(v)`.
 
 Builders: `obj(fields)`, `arr(items)`, `str(s)`, `num(text)`, `of_u32(n)`,

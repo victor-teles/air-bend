@@ -13,12 +13,12 @@ before any commit, and update your row when done.
 | 002  | Wildcards, mounting, trailing-slash policy, startup conflict check | P1 | M | 001 | DONE (2026-09-19; 19 routing laws pass; all three policies, mount, wildcards and the exit-1 conflict check probed live) |
 | 003  | 405 with Allow, HEAD falls back to GET, automatic OPTIONS | P1 | S | 002 | DONE (2026-09-19; 10 laws pass; HEAD, 405 Allow, OPTIONS and OPTIONS * probed live) |
 
-| 004  | JSON module: parse, render, Request.json, Response.of_json | P1 | M | — | TODO |
-| 005  | Forms: urlencoded, multipart in memory, repeated query keys | P2 | M | — | TODO |
-| 006  | Request headers: cookies, negotiation, client IP/host/scheme with trust | P2 | M | — | TODO |
-| 007  | Response builders: Set-Cookie list, content-type helper, send, redirects | P1 | M | — | TODO |
-| 008  | Streaming bodies over chunked encoding, SSE | P2 | L | 007 | TODO |
-| 009  | File responses: ETag, conditional 304, Range/206 | P2 | M | 007 | TODO |
+| 004  | JSON module: parse, render, Request.json, Response.of_json | P1 | M | — | DONE (2026-09-20; 21 laws; dashboard rebuilt on values; echo, 400s, 160 KB body and a bracket bomb probed live) |
+| 005  | Forms: urlencoded, multipart in memory, repeated query keys | P2 | M | — | DONE (2026-09-20; 15 laws; urlencoded, query_all and a curl multipart upload probed live) |
+| 006  | Request headers: cookies, negotiation, client IP/host/scheme with trust | P2 | M | — | DONE (2026-09-20; 19 laws; cookies, X-Forwarded-*, Forwarded and negotiation probed live) |
+| 007  | Response builders: Set-Cookie list, content-type helper, send, redirects | P1 | M | — | DONE (2026-09-20; 15 laws; two-cookie 303, expire, send inference and with_type probed live; README step skipped: the API section was removed by the owner in 295ab35) |
+| 008  | Streaming bodies over chunked encoding, SSE | P2 | L | 007 | DONE (2026-09-20; scratch program confirmed reader-side close unblocks a producer with send=False; 5 laws; six live checks passed; whole-body bench 30.4k GET req/s, no regression) |
+| 009  | File responses: ETag, conditional 304, Range/206 | P2 | M | 007 | DONE (2026-09-20; 17 laws; ETag, 304, 206, 416 and 404 probed on the dashboard from both working directories) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 

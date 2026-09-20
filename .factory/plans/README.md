@@ -20,6 +20,9 @@ before any commit, and update your row when done.
 | 008  | Streaming bodies over chunked encoding, SSE | P2 | L | 007 | DONE (2026-09-20; scratch program confirmed reader-side close unblocks a producer with send=False; 5 laws; six live checks passed; whole-body bench 30.4k GET req/s, no regression) |
 | 009  | File responses: ETag, conditional 304, Range/206 | P2 | M | 007 | DONE (2026-09-20; 17 laws; ETag, 304, 206, 416 and 404 probed on the dashboard from both working directories) |
 
+| 010  | Onion middleware: `use`, `Route.wrap`, per-request locals | P1 | M | — | DONE (2026-09-20; 5 laws; live: timing log, 401 short-circuit with no handler run, local read through `wrap(~auth("secret"))`, public route untouched, and `[outer, inner]` printed in/in/out/out; server untouched) |
+| 011  | Typed errors, `fail`, `on_error` renderer, dev/prod, `attempt` | P1 | M | 010 | DONE (2026-09-20; 14 laws incl. byte-identical 404 render; live: /boom, /nope, 401, 405 with detail+route in dev and reason only in prod; dashboard 404 and bad echo as JSON; `attempt` on unset HOME → 500; without `on_error` the server settles with no detail even in dev; HEAD /nope head only. `Other` renamed `Status` since `Method.Other` exists; `Status.reasons` moved above `Error`) |
+
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
 ## Dependency notes
@@ -34,6 +37,9 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   both change or extend the `Response` type that 007 redefines, so 007 goes
   first. Suggested order: 007, 004, 005, 006, 009, 008 (008 is the risky
   one and touches the server; do it last).
+- Tier 4: 011 requires 010 because `on_error` is a middleware in the
+  `use` shape and its examples wrap the app with `use`. 010 is
+  independent of everything and does not touch the server.
 
 ## Roadmap Tier 2 coverage
 
@@ -72,6 +78,20 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 | File responses: ETag, conditional 304, Range/206 | 009 |
 | File responses: Last-Modified | rejected, see below |
 
+## Roadmap Tier 4 coverage
+
+| Roadmap item | Plan |
+|---|---|
+| Pipeline model (onion vs hook phases) | 010: onion, `Middleware() = Handler() -> Handler()`; hook phases rejected, see below |
+| Global vs per-route vs per-group middleware | 010: `Air.use(mws, handler)`; `Air.Route.wrap(~mw, routes)` on a group (a template, so one middleware serves every route); per route is `mw(handler)` |
+| Short-circuiting | 010: a middleware that does not call `next` drops it; nothing to build |
+| Per-request context/state object | 010: `Request.locals`, `Request.local` / `with_local`, string values |
+| Centralized error handler | 011: `Air.on_error(render, next)` middleware over a `Failed` response body; the server settles what no renderer caught |
+| Typed HTTP error class hierarchy | 011: `Http.Error` sum type, `Air.Error.not_found(detail)` etc., `Air.fail(e)` |
+| Async rejection capture | 011: `Air.attempt(A, effect, k)` turns a failed effect into a 500 value; `IO.try`/`IO.die` in handlers are documented as forbidden; runtime crashes cannot be caught |
+| Dev vs prod error rendering | 011: `Air.Env` from `AIR_ENV`; `Error.plain(env)` / `Error.json(env)` show detail, method and path in dev only; the server never writes detail |
+| Response-already-sent guard | 011: by construction (one `IO(Response)` per handler, socket owned by the server); documented, no code |
+
 ## Findings considered and rejected
 
 - Radix tree: handlers are affine closures rebuilt per request, so a tree
@@ -96,4 +116,20 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   mtime is unknown. ETag from content covers conditional requests.
 - Multi-hop proxy trust (hop counts, trusted CIDRs): single trusted proxy
   only in 006; the peer address is unknown to Bend anyway.
+- Hook-phase middleware (Fastify `onRequest`/`preHandler`/`onSend`): needs
+  a registry of callbacks called per request, and functions cannot be
+  copied in Bend; the onion needs no registry and `next` is affine, so the
+  checker enforces "at most once". Tier 6 lifecycle hooks are onion
+  middleware with a name.
+- Typed or JSON-valued request locals: `Map` values must be `Data`, and a
+  `Map<&2, Json.Value>` would double the API for no consumer yet. Strings,
+  like params and query. Revisit with a session store (Tier 5).
+- Routing the server's own refusals (400 parse, 413/414/431 limits, 503
+  on app timeout) through `on_error`: there is no parsed request, or the
+  connection can no longer be trusted, so they stay in `refuse`.
+- Catching `IO.die`, `IO.try` failures or a runtime crash inside a
+  handler: not possible in Bend 2.0.10; `attempt` covers fallible effects
+  before they reach `IO.try`.
+- `Accept`-driven choice between the plain and JSON error renderers: an
+  app composes `Request.accepts` with the two shipped renderers itself.
 

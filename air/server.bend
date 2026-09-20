@@ -588,22 +588,29 @@ def stream(+ctx: Ctx, sock: Socket, +req: Http.Request, +rest: String, +res: Htt
   stream.go(ctx, sock, req, rest, res, chan, ck,
     Bool.and(ck, Bool.and(Http.Request.keep_alive(req), Bool.not(Text.has_token(Http.Response.header(res, "connection"), "close")))))
 
+def respond.whole(+ctx: Ctx, sock: Socket, +req: Http.Request, rest: String, +res: Http.Response) -> IO(Next):
+  send(
+    ctx,
+    sock,
+    rest,
+    Http.Method.is_eq(Http.Request.method(req), Http.HEAD{}),
+    Bool.and(Http.Request.keep_alive(req), Bool.not(Text.has_token(Http.Response.header(res, "connection"), "close"))),
+    res)
+
 def respond.pick(+ctx: Ctx, sock: Socket, +req: Http.Request, rest: String, +res: Http.Response, payload: Http.Body) -> IO(Next):
   match payload:
     case Http.Whole{text}:
-      send(
-        ctx,
-        sock,
-        rest,
-        Http.Method.is_eq(Http.Request.method(req), Http.HEAD{}),
-        Bool.and(Http.Request.keep_alive(req), Bool.not(Text.has_token(Http.Response.header(res, "connection"), "close"))),
-        res)
+      respond.whole(ctx, sock, req, rest, res)
+    case Http.Failed{err}:
+      respond.whole(ctx, sock, req, rest, res)
     case Http.Stream{chan}:
       stream(ctx, sock, req, rest, res, chan)
 
 # Writes the app's response. The connection stays open when both the
-# request and the response allow it.
-def respond(+ctx: Ctx, sock: Socket, +req: Http.Request, rest: String, +res: Http.Response) -> IO(Next):
+# request and the response allow it. An error no middleware rendered is
+# settled here in prod style, so the wire never carries a detail.
+def respond(+ctx: Ctx, sock: Socket, +req: Http.Request, rest: String, res: Http.Response) -> IO(Next):
+  +res = Http.Response.settle(Http.Prod{}, res)
   do IO<Next>:
     log(Http.Method.show(Http.Request.method(req)), Http.Request.path(req), Http.Response.status(res))
     respond.pick(ctx, sock, req, rest, res, Http.Response.payload(res))

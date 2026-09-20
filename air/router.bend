@@ -14,6 +14,31 @@ import ./http.bend as Http
 def Handler() -> Type:
   Http.Request -> IO(Http.Response)
 
+# Middleware
+# ----------
+#
+# A middleware takes the next handler and gives a handler. Written as a
+# def with `next` first,
+#
+#   def logger(next: Handler(), req: Http.Request) -> IO(Http.Response)
+#
+# the bare name `logger` is a middleware and `logger(h)` a handler. One
+# that takes a setting takes it before `next`, `auth(+token, next, req)`,
+# and `auth("secret")` is the middleware. To answer without running the
+# rest of the chain, drop `next`: it is affine, so that is free, and the
+# checker sees that it runs at most once.
+def Middleware() -> Type:
+  Handler() -> Handler()
+
+# Wraps `h` in each middleware, the first in the list outermost: with
+# `use([a, b], h)`, `a` runs first on the way in and last on the way out.
+def use(mws: List<Middleware()>, h: Handler()) -> Handler():
+  match mws:
+    case Nil{}:
+      h
+    case Con{m, rest}:
+      m(use(rest, h))
+
 # One segment of a route pattern. `Rest` is `*name`: it must be last and
 # binds the remaining path, joined with "/", possibly "".
 type Seg is Data:
@@ -92,6 +117,16 @@ def mount.go(+prefix: List<&2, Seg>, routes: List<Route>) -> List<Route>:
 
 def mount(prefix: String, routes: List<Route>) -> List<Route>:
   mount.go(parse_pattern(prefix), routes)
+
+# Wraps every route's handler in `mw`. The middleware is a template,
+# since one function value cannot serve N routes: pass a def, or a def
+# applied to constants (`~auth("secret")`), never a local variable.
+def wrap(~mw: Middleware(), routes: List<Route>) -> List<Route>:
+  match routes:
+    case Nil{}:
+      Nil{}
+    case Con{Route{m, pat, slash, h}, rest}:
+      Con{Route{m, pat, slash, mw(h)}, wrap(~mw, rest)}
 
 def append_routes(xs: List<Route>, ys: List<Route>) -> List<Route>:
   match xs:

@@ -108,56 +108,75 @@ type Request is Data:
     query: Map<&2, String>,
     headers: Map<&2, String>,
     params: Map<&2, String>,
-    body: String
+    body: String,
+    locals: Map<&2, String>
   }
 
 def Request.method(r: Request) -> Method:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b}:
+    case Request{m, v, tg, p, q, h, ps, b, l}:
       m
 
 # "HTTP/1.1" or "HTTP/1.0", as the request line said.
 def Request.version(r: Request) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b}:
+    case Request{m, v, tg, p, q, h, ps, b, l}:
       v
 
 # The request-target as received: raw path and query, undecoded.
 def Request.target(r: Request) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b}:
+    case Request{m, v, tg, p, q, h, ps, b, l}:
       tg
 
 # The path in its normal form: percent-decoded, `.` and `..` resolved,
 # repeated slashes collapsed, a trailing slash kept. `*` for `OPTIONS *`.
 def Request.path(r: Request) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b}:
+    case Request{m, v, tg, p, q, h, ps, b, l}:
       p
 
 def Request.body(r: Request) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b}:
+    case Request{m, v, tg, p, q, h, ps, b, l}:
       b
 
 # A header by name, case-insensitive; "" when absent. A repeated header
 # reads as its values joined with ", ".
 def Request.header(r: Request, name: String) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b}:
+    case Request{m, v, tg, p, q, h, ps, b, l}:
       Text.map_get(h, String.to_lower(name), SNil{})
 
 # A query-string value; "" when absent.
 def Request.query(r: Request, key: String) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b}:
+    case Request{m, v, tg, p, q, h, ps, b, l}:
       Text.map_get(q, key, SNil{})
 
 # A path parameter bound by the route, like `:id`; "" when absent.
 def Request.param(r: Request, key: String) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b}:
+    case Request{m, v, tg, p, q, h, ps, b, l}:
       Text.map_get(ps, key, SNil{})
+
+# A value a middleware left for the handlers after it, like `param`;
+# "" when absent. Locals are strings, as params and query are.
+def Request.local(r: Request, key: String) -> String:
+  match r:
+    case Request{m, v, tg, p, q, h, ps, b, l}:
+      Text.map_get(l, key, SNil{})
+
+# Every local, for logging.
+def Request.locals(r: Request) -> Map<&2, String>:
+  match r:
+    case Request{m, v, tg, p, q, h, ps, b, l}:
+      l
+
+def Request.with_local(r: Request, key: String, value: String) -> Request:
+  match r:
+    case Request{m, v, tg, p, q, h, ps, b, l}:
+      Request{m, v, tg, p, q, h, ps, b, Map.set(&2, String, l, key, value)}
 
 # The content type's media type: lowercased, without parameters.
 def Request.media_type(r: Request) -> String:
@@ -179,13 +198,13 @@ def Request.json(+r: Request) -> Maybe<&2, Json.Value>:
 
 def Request.with_params(r: Request, params: Map<&2, String>) -> Request:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b}:
-      Request{m, v, tg, p, q, h, params, b}
+    case Request{m, v, tg, p, q, h, ps, b, l}:
+      Request{m, v, tg, p, q, h, params, b, l}
 
 def Request.with_body(r: Request, body: String) -> Request:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b}:
-      Request{m, v, tg, p, q, h, ps, body}
+    case Request{m, v, tg, p, q, h, ps, b, l}:
+      Request{m, v, tg, p, q, h, ps, body, l}
 
 def Request.joined(old: String, v: String) -> String:
   match old:
@@ -662,7 +681,8 @@ def Request.parse.fin(method: String, version: String, target: String, url_ok: B
         q,
         h,
         Map.new(&2, String),
-        SNil{}
+        SNil{},
+        Map.new(&2, String)
       }}
 
 # Splits the target once into path and query, then normalizes each.
@@ -787,15 +807,157 @@ def Parsed.query(p: Parsed, key: String) -> String:
     case Refused{status}:
       SNil{}
 
+# Status
+# ------
+
+def Status.reasons() -> Map<&2, String>:
+  m = Map.new(&2, String)
+  m = Map.set(&2, String, m, "100", "Continue")
+  m = Map.set(&2, String, m, "200", "OK")
+  m = Map.set(&2, String, m, "201", "Created")
+  m = Map.set(&2, String, m, "202", "Accepted")
+  m = Map.set(&2, String, m, "204", "No Content")
+  m = Map.set(&2, String, m, "206", "Partial Content")
+  m = Map.set(&2, String, m, "301", "Moved Permanently")
+  m = Map.set(&2, String, m, "302", "Found")
+  m = Map.set(&2, String, m, "303", "See Other")
+  m = Map.set(&2, String, m, "304", "Not Modified")
+  m = Map.set(&2, String, m, "307", "Temporary Redirect")
+  m = Map.set(&2, String, m, "308", "Permanent Redirect")
+  m = Map.set(&2, String, m, "400", "Bad Request")
+  m = Map.set(&2, String, m, "401", "Unauthorized")
+  m = Map.set(&2, String, m, "403", "Forbidden")
+  m = Map.set(&2, String, m, "404", "Not Found")
+  m = Map.set(&2, String, m, "405", "Method Not Allowed")
+  m = Map.set(&2, String, m, "408", "Request Timeout")
+  m = Map.set(&2, String, m, "409", "Conflict")
+  m = Map.set(&2, String, m, "410", "Gone")
+  m = Map.set(&2, String, m, "411", "Length Required")
+  m = Map.set(&2, String, m, "413", "Content Too Large")
+  m = Map.set(&2, String, m, "414", "URI Too Long")
+  m = Map.set(&2, String, m, "415", "Unsupported Media Type")
+  m = Map.set(&2, String, m, "416", "Range Not Satisfiable")
+  m = Map.set(&2, String, m, "417", "Expectation Failed")
+  m = Map.set(&2, String, m, "422", "Unprocessable Content")
+  m = Map.set(&2, String, m, "429", "Too Many Requests")
+  m = Map.set(&2, String, m, "431", "Request Header Fields Too Large")
+  m = Map.set(&2, String, m, "500", "Internal Server Error")
+  m = Map.set(&2, String, m, "501", "Not Implemented")
+  m = Map.set(&2, String, m, "503", "Service Unavailable")
+  m = Map.set(&2, String, m, "505", "HTTP Version Not Supported")
+  m
+
+def Status.reason(code: U32) -> String:
+  Text.map_get(Status.reasons(), U32.show(code), "Unknown")
+
+# Errors
+# ------
+#
+# Bend has no exceptions, so an error is a value. A handler answers
+# `Response.fail(e)`; the app's `on_error` middleware (errors.bend)
+# renders it, and whatever reaches the server unrendered is settled in
+# prod style. `detail` is for the developer and is shown in dev only.
+
+type Error is Data:
+  BadRequest{detail: String}
+  Unauthorized{detail: String}
+  Forbidden{detail: String}
+  NotFound{detail: String}
+  Conflict{detail: String}
+  Gone{detail: String}
+  TooLarge{detail: String}
+  Unsupported{detail: String}
+  Unprocessable{detail: String}
+  TooMany{detail: String}
+  Internal{detail: String}
+  NotImplemented{detail: String}
+  Unavailable{detail: String}
+  Status{status: U32, detail: String}
+
+def Error.status(e: Error) -> U32:
+  match e:
+    case BadRequest{d}:
+      400
+    case Unauthorized{d}:
+      401
+    case Forbidden{d}:
+      403
+    case NotFound{d}:
+      404
+    case Conflict{d}:
+      409
+    case Gone{d}:
+      410
+    case TooLarge{d}:
+      413
+    case Unsupported{d}:
+      415
+    case Unprocessable{d}:
+      422
+    case TooMany{d}:
+      429
+    case Internal{d}:
+      500
+    case NotImplemented{d}:
+      501
+    case Unavailable{d}:
+      503
+    case Status{s, d}:
+      s
+
+def Error.detail(e: Error) -> String:
+  match e:
+    case BadRequest{d}:
+      d
+    case Unauthorized{d}:
+      d
+    case Forbidden{d}:
+      d
+    case NotFound{d}:
+      d
+    case Conflict{d}:
+      d
+    case Gone{d}:
+      d
+    case TooLarge{d}:
+      d
+    case Unsupported{d}:
+      d
+    case Unprocessable{d}:
+      d
+    case TooMany{d}:
+      d
+    case Internal{d}:
+      d
+    case NotImplemented{d}:
+      d
+    case Unavailable{d}:
+      d
+    case Status{s, d}:
+      d
+
+# Whether to show error details: `Dev` renders them, `Prod` never does.
+type Env is Data:
+  Dev{}
+  Prod{}
+
+def Env.is_dev(env: Env) -> Bool:
+  match env:
+    case Dev{}:
+      True{}
+    case Prod{}:
+      False{}
+
 # Response
 # --------
 
-# A response body: text sent whole, or a channel the server drains as
-# chunks until the producer closes it. A `Chan` is Data, so a `Response`
-# stays Data.
+# A response body: text sent whole, a channel the server drains as
+# chunks until the producer closes it, or an error not yet rendered. A
+# `Chan` is Data, so a `Response` stays Data.
 type Body is Data:
   Whole{text: String}
   Stream{chan: Chan(String)}
+  Failed{err: Error}
 
 # `cookies` are rendered `Set-Cookie` lines, one header each: it is the
 # one header that must never be joined with ", ".
@@ -816,8 +978,10 @@ def Body.text(b: Body) -> String:
       text
     case Stream{chan}:
       SNil{}
+    case Failed{err}:
+      Status.reason(Error.status(err))
 
-# The body's text; "" for a stream.
+# The body's text; "" for a stream, the reason phrase for an error.
 def Response.body(r: Response) -> String:
   match r:
     case Response{s, h, c, b}:
@@ -863,19 +1027,39 @@ def Response.of_json(v: Json.Value) -> Response:
 def Response.redirect(url: String) -> Response:
   Response.with_header(Response.empty(302), "location", url)
 
+# An error as a response: its status, and a body rendered later by the
+# app's error middleware or, failing that, by the server in prod style.
+def Response.fail(+e: Error) -> Response:
+  Response{Error.status(e), Map.new(&2, String), Nil{}, Failed{e}}
+
+def Body.error(b: Body) -> Maybe<&2, Error>:
+  match b:
+    case Whole{text}:
+      None{}
+    case Stream{chan}:
+      None{}
+    case Failed{err}:
+      Some{err}
+
+# The error a failed response carries; None for a rendered one.
+def Response.error(r: Response) -> Maybe<&2, Error>:
+  match r:
+    case Response{s, h, c, b}:
+      Body.error(b)
+
 def Response.not_found() -> Response:
-  Response.with_status(Response.text("Not Found"), 404)
+  Response.fail(NotFound{SNil{}})
 
 # A 405 must say what would have worked: `allow` is "GET, HEAD, OPTIONS".
 def Response.method_not_allowed(allow: String) -> Response:
-  Response.with_header(Response.with_status(Response.text("Method Not Allowed"), 405), "allow", allow)
+  Response.with_header(Response.fail(Status{405, SNil{}}), "allow", allow)
 
 # The answer to an OPTIONS request no route claims: 204 with `Allow`.
 def Response.options(allow: String) -> Response:
   Response.with_header(Response.empty(204), "allow", allow)
 
 def Response.bad_request() -> Response:
-  Response.with_status(Response.text("Bad Request"), 400)
+  Response.fail(BadRequest{SNil{}})
 
 # Content type
 # ------------
@@ -1233,47 +1417,53 @@ def Response.ranged(+req: Request, +res: Response) -> Response:
   Response.ranged.go(req, res, Text.byte_length(Response.body(res), 0),
     Bool.and(Request.is_read(req), U32.is_eq(Response.status(res), 200)))
 
-def Status.reasons() -> Map<&2, String>:
-  m = Map.new(&2, String)
-  m = Map.set(&2, String, m, "100", "Continue")
-  m = Map.set(&2, String, m, "200", "OK")
-  m = Map.set(&2, String, m, "201", "Created")
-  m = Map.set(&2, String, m, "202", "Accepted")
-  m = Map.set(&2, String, m, "204", "No Content")
-  m = Map.set(&2, String, m, "206", "Partial Content")
-  m = Map.set(&2, String, m, "301", "Moved Permanently")
-  m = Map.set(&2, String, m, "302", "Found")
-  m = Map.set(&2, String, m, "303", "See Other")
-  m = Map.set(&2, String, m, "304", "Not Modified")
-  m = Map.set(&2, String, m, "307", "Temporary Redirect")
-  m = Map.set(&2, String, m, "308", "Permanent Redirect")
-  m = Map.set(&2, String, m, "400", "Bad Request")
-  m = Map.set(&2, String, m, "401", "Unauthorized")
-  m = Map.set(&2, String, m, "403", "Forbidden")
-  m = Map.set(&2, String, m, "404", "Not Found")
-  m = Map.set(&2, String, m, "405", "Method Not Allowed")
-  m = Map.set(&2, String, m, "408", "Request Timeout")
-  m = Map.set(&2, String, m, "409", "Conflict")
-  m = Map.set(&2, String, m, "411", "Length Required")
-  m = Map.set(&2, String, m, "413", "Content Too Large")
-  m = Map.set(&2, String, m, "414", "URI Too Long")
-  m = Map.set(&2, String, m, "416", "Range Not Satisfiable")
-  m = Map.set(&2, String, m, "417", "Expectation Failed")
-  m = Map.set(&2, String, m, "422", "Unprocessable Content")
-  m = Map.set(&2, String, m, "429", "Too Many Requests")
-  m = Map.set(&2, String, m, "431", "Request Header Fields Too Large")
-  m = Map.set(&2, String, m, "500", "Internal Server Error")
-  m = Map.set(&2, String, m, "501", "Not Implemented")
-  m = Map.set(&2, String, m, "503", "Service Unavailable")
-  m = Map.set(&2, String, m, "505", "HTTP Version Not Supported")
-  m
-
-def Status.reason(code: U32) -> String:
-  Text.map_get(Status.reasons(), U32.show(code), "Unknown")
-
 # 1xx, 204 and 304 responses never carry a body.
 def Response.no_body(+status: U32) -> Bool:
   Bool.or(U32.is_lt(status, 200), Bool.or(U32.is_eq(status, 204), U32.is_eq(status, 304)))
+
+# Settling
+# --------
+
+# The plain text of an error: the reason phrase, and in dev the detail
+# on a second line when there is one.
+def Error.plain_text.fin(reason: String, detail: String, shown: Bool) -> String:
+  match shown:
+    case True{}:
+      reason ++ "\n" ++ detail
+    case False{}:
+      reason
+
+def Error.plain_text(+e: Error, env: Env) -> String:
+  +detail = Error.detail(e)
+  Error.plain_text.fin(Status.reason(Error.status(e)), detail,
+    Bool.and(Env.is_dev(env), Bool.not(String.eq(detail, SNil{}))))
+
+def Response.settle.type(h: Map<&2, String>, has_type: Bool) -> Map<&2, String>:
+  match has_type:
+    case True{}:
+      h
+    case False{}:
+      Map.set(&2, String, h, "content-type", "text/plain; charset=utf-8")
+
+# The headers of a settled error: `text/plain` unless a type was set.
+def Response.settle.headers(+h: Map<&2, String>) -> Map<&2, String>:
+  Response.settle.type(h, Bool.not(String.eq(Text.map_get(h, "content-type", SNil{}), SNil{})))
+
+def Response.settle.go(s: U32, h: Map<&2, String>, c: List<&2, String>, b: Body, env: Env) -> Response:
+  match b:
+    case Whole{text}:
+      Response{s, h, c, Whole{text}}
+    case Stream{chan}:
+      Response{s, h, c, Stream{chan}}
+    case Failed{err}:
+      Response{s, Response.settle.headers(h), c, Whole{Error.plain_text(err, env)}}
+
+# Renders a failed body as plain text under `env`; a content type the
+# response already has is kept. Whole and stream bodies pass through.
+def Response.settle(env: Env, r: Response) -> Response:
+  match r:
+    case Response{s, h, c, b}:
+      Response.settle.go(s, h, c, b, env)
 
 def Response.render_header(kv: Text.Two()) -> String:
   (k, v) = kv
@@ -1332,18 +1522,24 @@ def Response.render_head(r: Response, +keep: Bool, chunked: Bool) -> String:
         ++ Response.render_framing(chunked)
         ++ "\r\n"
 
+def Response.render_whole(+status: U32, headers: Map<&2, String>, cookies: List<&2, String>, +body: String, head_only: Bool, +keep: Bool) -> String:
+  Response.render_start(status, headers, cookies, keep)
+    ++ Response.render_length(Text.byte_length(body, 0), status)
+    ++ "\r\n"
+    ++ Response.render_body(body, Bool.or(head_only, Response.no_body(status)))
+
 # The wire form of a response. `head_only` drops the body, for HEAD
 # requests. `keep` picks the Connection header. A stream renders as its
-# chunked head; the server writes the pieces.
+# chunked head; the server writes the pieces. An error still unrendered
+# is settled in prod style first: the wire never carries a detail.
 def Response.render(r: Response, head_only: Bool, +keep: Bool) -> String:
   match r:
     case Response{+status, headers, cookies, Whole{+body}}:
-      Response.render_start(status, headers, cookies, keep)
-        ++ Response.render_length(Text.byte_length(body, 0), status)
-        ++ "\r\n"
-        ++ Response.render_body(body, Bool.or(head_only, Response.no_body(status)))
+      Response.render_whole(status, headers, cookies, body, head_only, keep)
     case Response{+status, headers, cookies, Stream{chan}}:
       Response.render_head(Response{status, headers, cookies, Stream{chan}}, keep, True{})
+    case Response{+status, headers, cookies, Failed{err}}:
+      Response.render_whole(status, Response.settle.headers(headers), cookies, Error.plain_text(err, Prod{}), head_only, keep)
 
 # Streaming
 # ---------

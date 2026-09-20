@@ -3,6 +3,7 @@ import ./air/http.bend as Http
 import ./air/json.bend as Json
 import ./air/form.bend as Form
 import ./air/disk.bend as Disk
+import ./air/errors.bend as Errors
 import ./air/router.bend as Router
 import ./air/drain.bend as Drain
 import ./air/server.bend as Server
@@ -29,6 +30,18 @@ import ./air/server.bend as Server
 # Handlers are affine closures, so `routes()` is rebuilt for every request:
 # that is what lets each handler be called once per request.
 #
+# A middleware takes the next handler and gives one back; it runs code
+# before and after `next`, or answers without calling it:
+#
+#   def timing(next: Air.Handler(), req: Air.Request()) -> IO(Air.Response()):
+#     ...runs next(req), logs the elapsed time, returns its response...
+#
+#   def base(req: Air.Request()) -> IO(Air.Response()):
+#     Air.dispatch(routes(), req)
+#
+#   def app(req: Air.Request()) -> IO(Air.Response()):
+#     Air.use([timing], base)(req)
+#
 # This file is the public surface. The work lives in `air/`:
 #
 #   air/text.bend    string helpers that are safe on request buffers
@@ -37,6 +50,7 @@ import ./air/server.bend as Server
 #   air/http.bend    Limits, Method, Status, Request (parsing, framing), Response
 #   air/form.bend    multipart/form-data parts
 #   air/disk.bend    files as responses
+#   air/errors.bend  typed errors, their renderers, and effect capture
 #   air/router.bend  Route, Handler, dispatch
 #   air/race.bend    deadlines: an effect raced against a watchdog
 #   air/drain.bend   the stop switch and the tally of requests in flight
@@ -70,6 +84,19 @@ def Switch() -> Data:
 def Cookie() -> Data:
   Http.Cookie
 
+# An HTTP error as a value; see `fail` and `on_error`.
+def Error() -> Data:
+  Http.Error
+
+# `Env.dev()` or `Env.prod()`: whether error renderers show details.
+def Env() -> Data:
+  Http.Env
+
+# What `on_error` takes: a request and an error to the response the
+# client sees. `Error.plain(env)` and `Error.json(env)` are two.
+def Render() -> Type:
+  Errors.Render()
+
 # A JSON value. To match on its constructors, import `air/json.bend`
 # directly: imports are not transitive.
 def Json() -> Data:
@@ -89,6 +116,10 @@ def Trust() -> Data:
 
 def Handler() -> Type:
   Router.Handler()
+
+# `Handler() -> Handler()`: see `use` and `Route.wrap`.
+def Middleware() -> Type:
+  Router.Middleware()
 
 # A handler that also gets the server's stop switch. `serve_until` takes
 # one of these, so a route can stop the server.
@@ -184,6 +215,13 @@ def Request.query(r: Request(), key: String) -> String:
 # A path parameter bound by the route, like `:id`; "" when absent.
 def Request.param(r: Request(), key: String) -> String:
   Http.Request.param(r, key)
+
+# A value a middleware left for the handlers after it; "" when absent.
+def Request.local(r: Request(), key: String) -> String:
+  Http.Request.local(r, key)
+
+def Request.with_local(r: Request(), key: String, value: String) -> Request():
+  Http.Request.with_local(r, key, value)
 
 # The content type's media type, lowercased, without parameters.
 def Request.media_type(r: Request()) -> String:
@@ -468,6 +506,20 @@ def Cookie.same_site(c: Cookie(), mode: String) -> Cookie():
 def Cookie.render(c: Cookie()) -> String:
   Http.Cookie.render(c)
 
+# An error as a response: the status is the error's, and the body is
+# rendered later by `on_error` or, without it, by the server in prod
+# style. `fail` is the same wrapped in IO, for a handler to return.
+def Response.fail(e: Error()) -> Response():
+  Http.Response.fail(e)
+
+def fail(e: Error()) -> IO(Response()):
+  IO.pure(Response(), Http.Response.fail(e))
+
+# The error a failed response carries; None once rendered.
+def Response.error(r: Response()) -> Maybe<&2, Error()>:
+  Http.Response.error(r)
+
+# A 404 as a failed response, what `dispatch` answers for no route.
 def Response.not_found() -> Response():
   Http.Response.not_found()
 
@@ -481,6 +533,89 @@ def Response.options(allow: String) -> Response():
 
 def Response.bad_request() -> Response():
   Http.Response.bad_request()
+
+# Error
+# -----
+#
+# Each takes a detail for the developer: shown by the renderers in dev,
+# never in prod. Bend has no exceptions, so an error is a value a handler
+# returns with `fail`.
+
+def Error.bad_request(detail: String) -> Error():
+  Http.BadRequest{detail}
+
+def Error.unauthorized(detail: String) -> Error():
+  Http.Unauthorized{detail}
+
+def Error.forbidden(detail: String) -> Error():
+  Http.Forbidden{detail}
+
+def Error.not_found(detail: String) -> Error():
+  Http.NotFound{detail}
+
+def Error.conflict(detail: String) -> Error():
+  Http.Conflict{detail}
+
+def Error.gone(detail: String) -> Error():
+  Http.Gone{detail}
+
+def Error.too_large(detail: String) -> Error():
+  Http.TooLarge{detail}
+
+def Error.unsupported(detail: String) -> Error():
+  Http.Unsupported{detail}
+
+def Error.unprocessable(detail: String) -> Error():
+  Http.Unprocessable{detail}
+
+def Error.too_many(detail: String) -> Error():
+  Http.TooMany{detail}
+
+def Error.internal(detail: String) -> Error():
+  Http.Internal{detail}
+
+def Error.not_implemented(detail: String) -> Error():
+  Http.NotImplemented{detail}
+
+def Error.unavailable(detail: String) -> Error():
+  Http.Unavailable{detail}
+
+# Any other status.
+def Error.other(status: U32, detail: String) -> Error():
+  Http.Status{status, detail}
+
+def Error.status(e: Error()) -> U32:
+  Http.Error.status(e)
+
+def Error.detail(e: Error()) -> String:
+  Http.Error.detail(e)
+
+# The reason phrase: "Not Found".
+def Error.reason(+e: Error()) -> String:
+  Http.Status.reason(Http.Error.status(e))
+
+# Renderers for `on_error`. `plain` answers the reason phrase as text;
+# in dev, the method and path on a second line and the detail on a
+# third. `json` answers `{"status":404,"error":"Not Found"}`, plus
+# `detail` and `path` in dev.
+def Error.plain(+env: Env(), req: Request(), e: Error()) -> Response():
+  Errors.plain(env, req, e)
+
+def Error.json(+env: Env(), req: Request(), e: Error()) -> Response():
+  Errors.json(env, req, e)
+
+# Env
+# ---
+
+def Env.dev() -> Env():
+  Http.Dev{}
+
+def Env.prod() -> Env():
+  Http.Prod{}
+
+# `dev` when the `AIR_ENV` variable is "dev"; `prod` otherwise.
+def Env.from_env() -> IO(Env()):
+  Errors.Env.from_env()
 
 # JSON
 # ----
@@ -585,6 +720,14 @@ def Route.mount(prefix: String, routes: List<Route()>) -> List<Route()>:
 def Route.all(groups: List<List<Route()>>) -> List<Route()>:
   Router.all(groups)
 
+# Wraps every route's handler in one middleware, for a group:
+# `Route.mount("/admin", Route.wrap(~auth("secret"), admin()))`. The
+# middleware is a template argument, so it must be closed: a def, or a
+# def applied to constants, not a local variable. A single route needs
+# no helper: `Route.get("/x", auth("secret")(handler))`.
+def Route.wrap(~mw: Middleware(), routes: List<Route()>) -> List<Route()>:
+  Router.wrap(~mw, routes)
+
 # Checks a route list once, at startup: a duplicate (same method, same
 # shape once params are anonymized) or a wildcard that is not last is
 # printed and ends the process with code 1. Routes are matched in order,
@@ -617,6 +760,36 @@ def dispatch_with(+policy: Slash(), routes: List<Route()>, +req: Request()) -> I
 # `dispatch_with` under `Slash.ignore()`.
 def dispatch(routes: List<Route()>, +req: Request()) -> IO(Response()):
   Router.dispatch(routes, req)
+
+# Middleware
+# ----------
+
+# Wraps a handler in each middleware, the first in the list outermost:
+# with `use([a, b], h)`, `a` runs first on the way in and last on the
+# way out. A middleware is a def with `next` first,
+#
+#   def auth(+token: String, next: Air.Handler(), req: Air.Request()) -> IO(Air.Response()):
+#
+# so `auth("secret")` is a middleware. One that answers without calling
+# `next` ends the chain: `next` is affine, dropping it is free.
+def use(mws: List<Middleware()>, handler: Handler()) -> Handler():
+  Router.use(mws, handler)
+
+# The error middleware: runs `next`, and renders a failed response with
+# `render`. Put it in `use`, outermost or just inside the logging:
+#
+#   Air.use([Air.on_error(Air.Error.plain(env))], base)
+#
+# The server's own refusals (a bad request line, a limit, the 503 on
+# timeout) happen before the app runs and do not pass through it.
+def on_error(render: Render(), next: Handler(), req: Request()) -> IO(Response()):
+  Errors.on_error(render, next, req)
+
+# Runs a fallible effect in a handler: its value goes to `k`, its failure
+# becomes a 500 whose detail is the message. Use it instead of `IO.try`,
+# which would end the process.
+def attempt(-A: Type, act: IO(Result<&1, &1, U32 & String, A>), k: A -> IO(Response())) -> IO(Response()):
+  Errors.attempt(A, act, k)
 
 # Server
 # ------

@@ -48,15 +48,16 @@ Response:
 - [x] File responses: ETag, Last-Modified, conditional 304, Range/206 — `Air.Response.file(req, path, mime)` (`air/disk.bend`): FNV-1a ETag, `If-None-Match` → 304, single byte range → 206 or 416; `Last-Modified` rejected (no file stat effect); text files only
 
 Tier 4 — Middleware & errors
-Pipeline model — pick one and commit: onion/await next() (Koa/Hono) or hook phases (Fastify). This decision shapes the whole public API.
-Global vs per-route vs per-group middleware
-Short-circuiting (middleware returns a response, chain stops)
-Per-request context/state object
-Centralized error handler
-Typed HTTP error class hierarchy (BadRequest, NotFound, …)
-Async rejection capture — no unhandled promise rejections killing the process
-Dev vs prod error rendering (stack traces only in dev)
-Response-already-sent guard (double-send detection)
+
+- [x] Pipeline model — pick one and commit: onion/await next() (Koa/Hono) or hook phases (Fastify). This decision shapes the whole public API. — onion: `Air.Middleware()` is `Handler -> Handler`, a def with `next` first; hook phases rejected, since a callback registry would be copied per request and functions cannot be copied
+- [x] Global vs per-route vs per-group middleware — `Air.use(mws, handler)` for the app (first in the list outermost); `Air.Route.wrap(~mw, routes)` for a group, a template so one middleware serves every route; `mw(handler)` for one route
+- [x] Short-circuiting (middleware returns a response, chain stops) — a middleware that answers without calling `next` drops it; `next` is affine, so the checker enforces at most one call
+- [x] Per-request context/state object — `Air.Request.with_local` / `local`: string values, like params and query
+- [x] Centralized error handler — `Air.on_error(render)` middleware renders a `Failed` response body (`air/errors.bend`); the router's 404/405/400 are failed bodies too; whatever no renderer catches is settled by the server in prod style
+- [x] Typed HTTP error class hierarchy (BadRequest, NotFound, …) — `Http.Error` sum type, `Air.Error.not_found(detail)` and friends plus `Air.Error.other(status, detail)`; `Air.fail(e)` returns one from a handler
+- [x] Async rejection capture — no unhandled promise rejections killing the process — `Air.attempt(A, effect, k)` turns a failed effect into a 500 value; `IO.try`/`IO.die` in handlers are documented as forbidden; a runtime crash cannot be caught in Bend 2.0.10
+- [x] Dev vs prod error rendering (stack traces only in dev) — `Air.Env` from `AIR_ENV`; `Error.plain(env)` / `Error.json(env)` add method, path and detail in dev only; no stack traces in Bend, the detail string is the closest thing; the server never writes a detail
+- [x] Response-already-sent guard (double-send detection) — by construction: a handler is one `IO(Response)` and the server owns the socket; documented, no code
 
 Tier 5 — Batteries
 Static file serving (with path traversal protection)

@@ -81,11 +81,12 @@ def greet(req: Air.Request()) -> IO(Air.Response()):
     Air.Json.field("greeting", Air.Json.of_str("Hello, " ++ Air.Request.param(req, "name") ++ "!"))
   ])))
 
-# Echoes the JSON body back, wrapped; a body that is not JSON is a 400.
+# Echoes the JSON body back, wrapped; a body that is not JSON is a 400,
+# rendered as JSON by `on_error` below.
 def echo.fin(parsed: Maybe<&2, Air.Json()>) -> Air.Response():
   match parsed:
     case None{}:
-      Air.Response.bad_request()
+      Air.Response.fail(Air.Error.bad_request("body is not JSON"))
     case Some{v}:
       Air.Response.of_json(Air.Json.obj([Air.Json.field("received", v)]))
 
@@ -119,9 +120,16 @@ def routes(switch: Air.Switch()) -> List<Air.Route()>:
   Air.Route.all([pages(), Air.Route.mount("/api", api(switch))])
 
 # The app takes the stop switch along with the request, as `serve_until`
-# hands it over, so a route can stop the server.
-def app(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
+# hands it over, so a route can stop the server. Errors, the router's 404
+# included, are rendered as JSON; `AIR_ENV=dev` adds detail and path.
+def base(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
   Air.dispatch(routes(switch), req)
+
+def app.fin(switch: Air.Switch(), req: Air.Request(), env: Air.Env()) -> IO(Air.Response()):
+  Air.use([Air.on_error(Air.Error.json(env))], base(switch))(req)
+
+def app(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(Air.Env(), Air.Response(), Air.Env.from_env(), app.fin(switch, req))
 
 # The switch is a channel, so it can be shared: once with the route
 # check, once with the server.

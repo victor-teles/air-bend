@@ -6,6 +6,7 @@ import ./air/http.bend as Http
 import ./air/form.bend as Form
 import ./air/negotiate.bend as Negotiate
 import ./air/disk.bend as Disk
+import ./air/errors.bend as Errors
 import ./air/router.bend as Router
 import ./air/race.bend as Race
 import ./air/drain.bend as Drain
@@ -113,7 +114,7 @@ def request.fin(p: Http.Parsed) -> Http.Request:
     case Http.Parsed{req}:
       req
     case Http.Refused{status}:
-      Http.Request{Http.GET{}, "HTTP/1.1", "/", "/", Map.new(&2, String), Map.new(&2, String), Map.new(&2, String), ""}
+      Http.Request{Http.GET{}, "HTTP/1.1", "/", "/", Map.new(&2, String), Map.new(&2, String), Map.new(&2, String), "", Map.new(&2, String)}
 
 def request(head: String) -> Http.Request:
   request.fin(Http.Request.parse(Http.Limits.default(), head))
@@ -773,3 +774,88 @@ law tally_not_clear_in_flight:
 
 law tally_not_clear_open:
   {Drain.Tally.clear(Drain.Open{0}) == False{} : Bool}
+
+# Middleware
+# ----------
+
+# A middleware that changes nothing, for laws about wrapped route lists.
+def ident(next: Router.Handler(), req: Http.Request) -> IO(Http.Response):
+  next(req)
+
+law local_round_trip:
+  {Http.Request.local(Http.Request.with_local(request("GET / HTTP/1.1\r"), "user", "v"), "user") == "v" : String}
+
+law local_absent:
+  {Http.Request.local(request("GET / HTTP/1.1\r"), "user") == "" : String}
+
+law local_keeps_params:
+  {Http.Request.param(
+    Http.Request.with_local(
+      Http.Request.with_params(request("GET / HTTP/1.1\r"), Map.set(&2, String, Map.new(&2, String), "id", "1")),
+      "k", "v"),
+    "id") == "1" : String}
+
+law wrap_keeps_patterns:
+  {Router.pattern_of(Router.wrap(~ident, [Router.get("/a/:id", noop), Router.post("/b", noop)]))
+    == Router.pattern_of([Router.get("/a/:id", noop), Router.post("/b", noop)])
+    : List<&2, List<&2, Router.Seg>>}
+
+law wrap_keeps_conflicts:
+  {Router.conflicts(Router.wrap(~ident, [Router.get("/a", noop), Router.get("/a", noop)]))
+    == ["duplicate route: GET /a"]
+    : List<&2, String>}
+
+# Errors
+# ------
+
+law error_status_not_found:
+  {Http.Error.status(Http.NotFound{""}) == 404 : U32}
+
+law error_status_other:
+  {Http.Error.status(Http.Status{418, ""}) == 418 : U32}
+
+law error_reason_gone:
+  {Http.Status.reason(Http.Error.status(Http.Gone{""})) == "Gone" : String}
+
+law fail_carries_status:
+  {Http.Response.status(Http.Response.fail(Http.Forbidden{"x"})) == 403 : U32}
+
+law fail_reads_back:
+  {Http.Response.error(Http.Response.fail(Http.Conflict{"c"})) == Some{Http.Conflict{"c"}} : Maybe<&2, Http.Error>}
+
+law whole_has_no_error:
+  {Http.Response.error(Http.Response.text("hi")) == None{} : Maybe<&2, Http.Error>}
+
+law settle_prod_hides_detail:
+  {Http.Response.body(Http.Response.settle(Http.Prod{}, Http.Response.fail(Http.Internal{"disk"})))
+    == "Internal Server Error" : String}
+
+law settle_dev_shows_detail:
+  {Http.Response.body(Http.Response.settle(Http.Dev{}, Http.Response.fail(Http.Internal{"disk"})))
+    == "Internal Server Error\ndisk" : String}
+
+law settle_keeps_type:
+  {Http.Response.header(Http.Response.settle(Http.Prod{}, Http.Response.with_type(Http.Response.fail(Http.NotFound{""}), "text/html")), "content-type")
+    == "text/html; charset=utf-8" : String}
+
+law not_found_is_failed:
+  {Http.Response.error(Http.Response.not_found()) == Some{Http.NotFound{""}} : Maybe<&2, Http.Error>}
+
+# The wire form of the router's 404 is what it was before errors became
+# values, and it never carries a detail.
+law not_found_renders_same:
+  {Http.Response.render(Http.Response.not_found(), False{}, True{})
+    == "HTTP/1.1 404 Not Found\r\nconnection: keep-alive\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 9\r\n\r\nNot Found"
+    : String}
+
+law json_prod_shape:
+  {Http.Response.body(Errors.json(Http.Prod{}, request("GET /nope HTTP/1.1\r"), Http.NotFound{"d"}))
+    == "{\"status\":404,\"error\":\"Not Found\"}" : String}
+
+law json_dev_shape:
+  {Http.Response.body(Errors.json(Http.Dev{}, request("GET /nope HTTP/1.1\r"), Http.NotFound{"d"}))
+    == "{\"status\":404,\"error\":\"Not Found\",\"detail\":\"d\",\"path\":\"/nope\"}" : String}
+
+law plain_dev_shape:
+  {Http.Response.body(Errors.plain(Http.Dev{}, request("GET /nope HTTP/1.1\r"), Http.NotFound{"d"}))
+    == "Not Found\nGET /nope\nd" : String}

@@ -589,3 +589,60 @@ def Laws.tally_not_clear_in_flight():
 
 def Laws.tally_not_clear_open():
   {==}
+
+def Laws.local_round_trip():
+  {==}
+
+def Laws.local_absent():
+  {==}
+
+def Laws.local_keeps_params():
+  {==}
+
+def Laws.wrap_keeps_patterns():
+  {==}
+
+def Laws.wrap_keeps_conflicts():
+  {==}
+
+def Laws.error_status_not_found():
+  {==}
+
+def Laws.error_status_other():
+  {==}
+
+def Laws.error_reason_gone():
+  {==}
+
+def Laws.fail_carries_status():
+  {==}
+
+def Laws.fail_reads_back():
+  {==}
+
+def Laws.whole_has_no_error():
+  {==}
+
+def Laws.settle_prod_hides_detail():
+  {==}
+
+def Laws.settle_dev_shows_detail():
+  {==}
+
+def Laws.settle_keeps_type():
+  {==}
+
+def Laws.not_found_is_failed():
+  {==}
+
+def Laws.not_found_renders_same():
+  {==}
+
+def Laws.json_prod_shape():
+  {==}
+
+def Laws.json_dev_shape():
+  {==}
+
+def Laws.plain_dev_shape():
+  {==}

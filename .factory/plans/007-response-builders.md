@@ -58,7 +58,7 @@ Decisions:
 - `air/server.bend` reads `Http.Response.status`, `Http.Response.header(res, "connection")`,
   and calls `Http.Response.render`; it never constructs a `Response` by
   constructor (it uses `Response.text`, `with_status`). `grep -n "Response{" air/server.bend`
-  should confirm zero constructor uses.
+  confirms zero constructor uses (verified 2026-09-20).
 - `air.bend` wraps every builder; `README.md` "API" lists them.
 - Tier 2 laws use `Http.Response.header(...)` and `render(...)` on responses
   built by builders only.
@@ -73,7 +73,7 @@ Decisions:
 ## Implementation rules relevant to this plan
 
 - Change the constructor once, update every `case Response{s, h, b}` in
-  `air/http.bend` (about ten), and keep accessor names unchanged so the
+  `air/http.bend` (six, verified 2026-09-20), and keep accessor names unchanged so the
   server and the facade compile without edits beyond new wrappers.
 - Cookie rendering is app data, small: Base string ops are fine there.
 - Header names stay lowercase on the wire, as today.

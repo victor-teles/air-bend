@@ -29,23 +29,23 @@ Tier 3 — Request / Response objects
 
 Request:
 
-Case-insensitive header access
-Query parsing (decide early: flat, or nested/arrays — a[b]=1&c[]=2)
-Body parsers: JSON, urlencoded, text, raw buffer, stream, multipart/form-data (file uploads are their own mini-project: disk vs memory, temp cleanup, per-file limits)
-Cookie parsing
-Content negotiation: Accept, Accept-Encoding, Accept-Language
-Client IP + trust-proxy config (X-Forwarded-For/Forwarded)
-Protocol/host resolution
+- [x] Case-insensitive header access — names are lowercased at parse
+- [x] Query parsing (decide early: flat, or nested/arrays — a[b]=1&c[]=2) — flat, percent-decoded, last wins (plan 001); repeated keys via `query_all` in plan 005; nested rejected
+- [x] Body parsers: JSON, urlencoded, text, raw buffer, stream, multipart/form-data (file uploads are their own mini-project: disk vs memory, temp cleanup, per-file limits) — text (`Request.body`), JSON (`Request.json`, `air/json.bend`: strict, depth-capped at 64, numbers kept as text), urlencoded (`Request.form`, `form_all`) and multipart (`Request.parts`, `air/form.bend`, in memory under the body limit, text only) shipped; raw buffer and stream rejected (`TCP.recv` is UTF-8 text, bodies read whole); disk spooling and per-file limits deferred
+- [x] Cookie parsing — `Request.cookie(r, name)` and `cookies(r)`, values as sent
+- [x] Content negotiation: Accept, Accept-Encoding, Accept-Language — `Request.accepts / accepts_encoding / accepts_language(r, offers)` on one q-value algorithm (`air/negotiate.bend`)
+- [x] Client IP + trust-proxy config (X-Forwarded-For/Forwarded) — `Request.client_ip(r, Air.Trust.proxy())`, rightmost entry; `TCP.accept` gives no peer address, so `Trust.none()` (the default stance) always answers None
+- [x] Protocol/host resolution — `Request.host(r, trust)` and `Request.scheme(r, trust)`
 
 Response:
 
-status(), header(), json(), text(), html(), send()
-Content-Type inference and charset
-Redirects
-Cookie writing with full attribute support (HttpOnly, Secure, SameSite, Max-Age, Domain, Path)
-Streaming bodies + SSE
-Compression (gzip/brotli) negotiated, with a min-size threshold
-File responses: ETag, Last-Modified, conditional 304, Range/206
+- [x] status(), header(), json(), text(), html(), send() — `send` infers the type from the first character
+- [x] Content-Type inference and charset — `with_type` adds `; charset=utf-8` to text types, JSON, JavaScript and SVG
+- [x] Redirects — 301, 302, 303, 307, 308 and `redirect_with`
+- [x] Cookie writing with full attribute support (HttpOnly, Secure, SameSite, Max-Age, Domain, Path) — `Air.Cookie` builder; each cookie is its own `Set-Cookie` line; `SameSite=None` forces `Secure`
+- [x] Streaming bodies + SSE — `Air.Response.stream(chan)` / `sse(chan)` over `Air.Stream.new()`: the server drains the channel as chunks under the send timeout per piece, closes it when the client leaves (the producer's send answers False), HEAD gets the head only, HTTP/1.0 gets it unframed; `Air.Sse.event` / `data` format events
+- [x] Compression (gzip/brotli) negotiated, with a min-size threshold — rejected: no zlib or brotli effect in Bend 2.0.10; compress at the proxy, like TLS
+- [x] File responses: ETag, Last-Modified, conditional 304, Range/206 — `Air.Response.file(req, path, mime)` (`air/disk.bend`): FNV-1a ETag, `If-None-Match` → 304, single byte range → 206 or 416; `Last-Modified` rejected (no file stat effect); text files only
 
 Tier 4 — Middleware & errors
 Pipeline model — pick one and commit: onion/await next() (Koa/Hono) or hook phases (Fastify). This decision shapes the whole public API.

@@ -1,5 +1,8 @@
 import Base
 import ./air/http.bend as Http
+import ./air/json.bend as Json
+import ./air/form.bend as Form
+import ./air/disk.bend as Disk
 import ./air/router.bend as Router
 import ./air/drain.bend as Drain
 import ./air/server.bend as Server
@@ -30,7 +33,10 @@ import ./air/server.bend as Server
 #
 #   air/text.bend    string helpers that are safe on request buffers
 #   air/chunk.bend   the `Transfer-Encoding: chunked` decoder
+#   air/json.bend    a JSON value, parser and renderer
 #   air/http.bend    Limits, Method, Status, Request (parsing, framing), Response
+#   air/form.bend    multipart/form-data parts
+#   air/disk.bend    files as responses
 #   air/router.bend  Route, Handler, dispatch
 #   air/race.bend    deadlines: an effect raced against a watchdog
 #   air/drain.bend   the stop switch and the tally of requests in flight
@@ -60,6 +66,26 @@ def Timeouts() -> Data:
 
 def Switch() -> Data:
   Drain.Switch()
+
+def Cookie() -> Data:
+  Http.Cookie
+
+# A JSON value. To match on its constructors, import `air/json.bend`
+# directly: imports are not transitive.
+def Json() -> Data:
+  Json.Value
+
+# A key and its value, for `Json.obj`.
+def Json.Field() -> Data:
+  Json.Field()
+
+# One part of a multipart/form-data body.
+def Part() -> Data:
+  Form.Part
+
+# Whether to believe forwarding headers; see `Trust.proxy`.
+def Trust() -> Data:
+  Http.Trust
 
 def Handler() -> Type:
   Router.Handler()
@@ -159,6 +185,110 @@ def Request.query(r: Request(), key: String) -> String:
 def Request.param(r: Request(), key: String) -> String:
   Http.Request.param(r, key)
 
+# The content type's media type, lowercased, without parameters.
+def Request.media_type(r: Request()) -> String:
+  Http.Request.media_type(r)
+
+# The body as JSON when the content type is `application/json` (or
+# `+json`) and the body parses; None otherwise.
+def Request.json(r: Request()) -> Maybe<&2, Json()>:
+  Http.Request.json(r)
+
+# The first cookie named `name`; "" when absent. Values are as sent.
+def Request.cookie(r: Request(), name: String) -> String:
+  Http.Request.cookie(r, name)
+
+# Every cookie sent, as (name, value) pairs in order.
+def Request.cookies(r: Request()) -> List<&2, Sigma<&2, &2, String, _ => String>>:
+  Http.Request.cookies(r)
+
+# The offer the client's `Accept` header prefers, by q-value and
+# specificity, the earliest offer on ties; None when it accepts none of
+# them. An absent header takes the first offer.
+def Request.accepts(r: Request(), offers: List<&2, String>) -> Maybe<&2, String>:
+  Http.Request.accepts(r, offers)
+
+def Request.accepts_encoding(r: Request(), offers: List<&2, String>) -> Maybe<&2, String>:
+  Http.Request.accepts_encoding(r, offers)
+
+# Like `accepts`, with the language prefix rule: `en` accepts `en-us`.
+def Request.accepts_language(r: Request(), offers: List<&2, String>) -> Maybe<&2, String>:
+  Http.Request.accepts_language(r, offers)
+
+# The client's address as a trusted proxy reports it: the rightmost
+# `X-Forwarded-For` entry, else the last `Forwarded` `for=` node. Bend's
+# `TCP.accept` gives no peer address, so without a trusted proxy this is
+# None.
+def Request.client_ip(r: Request(), trust: Trust()) -> Maybe<&2, String>:
+  Http.Request.client_ip(r, trust)
+
+# The host asked for: `X-Forwarded-Host` or `Forwarded` `host=` under a
+# trusted proxy, else the `Host` header; "" when absent.
+def Request.host(r: Request(), trust: Trust()) -> String:
+  Http.Request.host(r, trust)
+
+# "https" when a trusted proxy says so, else "http".
+def Request.scheme(r: Request(), trust: Trust()) -> String:
+  Http.Request.scheme(r, trust)
+
+# Every value of a repeated query key, in order: `?tag=a&tag=b` gives
+# ["a", "b"]. `query` keeps the last one. Keys are flat: `a[b]` is a key
+# named `a[b]`.
+def Request.query_all(r: Request(), key: String) -> List<&2, String>:
+  Http.Request.query_all(r, key)
+
+# A field of an `application/x-www-form-urlencoded` body; "" when the
+# body is not one or the key is absent.
+def Request.form(r: Request(), key: String) -> String:
+  Http.Request.form(r, key)
+
+def Request.form_all(r: Request(), key: String) -> List<&2, String>:
+  Http.Request.form_all(r, key)
+
+# The parts of a `multipart/form-data` body, in order; None when the
+# body is not one or is malformed. Parts are text: the runtime reads a
+# socket as UTF-8, so a binary upload is not preserved byte for byte.
+def Request.parts(r: Request()) -> Maybe<&2, List<&2, Part()>>:
+  Form.parts(r)
+
+# Trust
+# -----
+
+# Ignore every forwarding header (the default stance).
+def Trust.none() -> Trust():
+  Http.NoProxy{}
+
+# Believe `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto` and
+# `Forwarded`, as set by one proxy in front of Air. Only turn this on
+# when the proxy is the only way to reach the server.
+def Trust.proxy() -> Trust():
+  Http.Proxy{}
+
+# Part
+# ----
+
+def Part.name(p: Part()) -> String:
+  Form.Part.name(p)
+
+# The uploaded file's name; None for a plain field.
+def Part.filename(p: Part()) -> Maybe<&2, String>:
+  Form.Part.filename(p)
+
+# The part's content type, "text/plain" when it had none.
+def Part.mime(p: Part()) -> String:
+  Form.Part.mime(p)
+
+def Part.body(p: Part()) -> String:
+  Form.Part.body(p)
+
+# The first plain field named `name` among the parts; "" when absent.
+def Part.field(parts: List<&2, Part()>, name: String) -> String:
+  Form.field(parts, name)
+
+# The first file part named `name`.
+def Part.file(parts: List<&2, Part()>, name: String) -> Maybe<&2, Part()>:
+  Form.file(parts, name)
+
 # Response
 # --------
 
@@ -192,8 +322,151 @@ def Response.html(body: String) -> Response():
 def Response.json(body: String) -> Response():
   Http.Response.json(body)
 
+# A 200 with a JSON value rendered as its body.
+def Response.of_json(v: Json()) -> Response():
+  Http.Response.of_json(v)
+
+# A 200 whose body is whatever a producer sends on `chan`, written to
+# the client as it arrives (chunked encoding), until the producer
+# closes the channel:
+#
+#   def ticks.start(chan: Chan(String)) -> IO(Air.Response()):
+#     +chan = chan
+#     do IO<Air.Response()>:
+#       IO.spawn(Unit, tick(5n, chan, True{}))
+#       return Air.Response.sse(chan)
+#
+#   def ticks(req: Air.Request()) -> IO(Air.Response()):
+#     IO.bind(Chan(String), Air.Response(), Air.Stream.new(), ticks.start)
+#
+# Each piece has the send timeout to arrive and be written; a producer
+# silent for longer ends the connection. When the client goes away the
+# server closes the channel, so the producer's next `Chan.send` answers
+# False: stop then. A HEAD request gets the head only and the channel
+# is closed at once. An HTTP/1.0 client gets the pieces unframed and
+# the connection closes after.
+def Response.stream(chan: Chan(String)) -> Response():
+  Http.Response.stream(chan)
+
+# A stream typed `text/event-stream`; send `Air.Sse.event` or
+# `Air.Sse.data` on it.
+def Response.sse(chan: Chan(String)) -> Response():
+  Http.Response.sse(chan)
+
+# Stream
+# ------
+
+# A channel for `Response.stream`: room for eight pieces, so a producer
+# ahead of a slow client waits rather than piling up memory.
+def Stream.new() -> IO(Chan(String)):
+  Chan.new(String, 8)
+
+# Sse
+# ---
+
+# An SSE event: "event: name", one "data:" line per line of `data`,
+# and the blank line that ends it.
+def Sse.event(name: String, data: String) -> String:
+  Http.Sse.event(name, data)
+
+# An unnamed SSE message: the data lines and the blank line.
+def Sse.data(data: String) -> String:
+  Http.Sse.data(data)
+
+# The file at `path` with `mime`: a 200 tagged with an ETag, a 304 when
+# the request's `If-None-Match` has that tag, a 206 for a `Range`, or a
+# 404 when the file cannot be read. Files are read as UTF-8 text, so
+# this is for HTML, CSS, JavaScript, SVG and the like, not images. The
+# path is yours to choose: nothing here guards against `..`.
+def Response.file(req: Request(), path: String, mime: String) -> IO(Response()):
+  Disk.respond(req, path, mime)
+
+# The same three steps on any response: tag the body with its ETag and
+# offer byte ranges, answer 304 to a matching `If-None-Match`, and
+# answer a `Range` with a 206 or 416. Only GET and HEAD 200s qualify.
+def Response.with_etag(r: Response()) -> Response():
+  Http.Response.with_etag(r)
+
+def Response.conditional(req: Request(), r: Response()) -> Response():
+  Http.Response.conditional(req, r)
+
+def Response.ranged(req: Request(), r: Response()) -> Response():
+  Http.Response.ranged(req, r)
+
+# The whole file as text, or None when it cannot be opened or read.
+def Disk.read(path: String) -> IO(Maybe<&2, String>):
+  Disk.read(path)
+
+# A 200 whose content type is inferred from the body's first character:
+# `<` is HTML, `{` or `[` is JSON, anything else plain text. `with_type`
+# after it overrides the guess.
+def Response.send(body: String) -> Response():
+  Http.Response.send(body)
+
+# Sets the content type; text types, JSON, JavaScript and SVG get
+# `; charset=utf-8` unless the mime already has a parameter.
+def Response.with_type(r: Response(), mime: String) -> Response():
+  Http.Response.with_type(r, mime)
+
+# A 302.
 def Response.redirect(url: String) -> Response():
   Http.Response.redirect(url)
+
+def Response.redirect_with(status: U32, url: String) -> Response():
+  Http.Response.redirect_with(status, url)
+
+# 301, 303, 307 and 308.
+def Response.moved(url: String) -> Response():
+  Http.Response.moved(url)
+
+def Response.see_other(url: String) -> Response():
+  Http.Response.see_other(url)
+
+def Response.temporary_redirect(url: String) -> Response():
+  Http.Response.temporary_redirect(url)
+
+def Response.permanent_redirect(url: String) -> Response():
+  Http.Response.permanent_redirect(url)
+
+# Adds a `Set-Cookie` line; several cookies are several lines, in order.
+def Response.with_cookie(r: Response(), c: Cookie()) -> Response():
+  Http.Response.with_cookie(r, c)
+
+# Tells the browser to drop a cookie set with the default path.
+def Response.expire_cookie(r: Response(), name: String) -> Response():
+  Http.Response.expire_cookie(r, name)
+
+# Cookie
+# ------
+
+# A cookie to set, with safe defaults: Path=/, HttpOnly, SameSite=Lax,
+# session-long, not Secure. Names and values are emitted as given.
+def Cookie.new(name: String, value: String) -> Cookie():
+  Http.Cookie.new(name, value)
+
+def Cookie.with_path(c: Cookie(), path: String) -> Cookie():
+  Http.Cookie.with_path(c, path)
+
+def Cookie.with_domain(c: Cookie(), domain: String) -> Cookie():
+  Http.Cookie.with_domain(c, domain)
+
+# Seconds; 0 for a session cookie.
+def Cookie.with_max_age(c: Cookie(), seconds: U32) -> Cookie():
+  Http.Cookie.with_max_age(c, seconds)
+
+def Cookie.secure(c: Cookie(), on: Bool) -> Cookie():
+  Http.Cookie.secure(c, on)
+
+def Cookie.http_only(c: Cookie(), on: Bool) -> Cookie():
+  Http.Cookie.http_only(c, on)
+
+# "Lax", "Strict", "None" or "". `None` is rendered with `Secure`, as
+# browsers require.
+def Cookie.same_site(c: Cookie(), mode: String) -> Cookie():
+  Http.Cookie.same_site(c, mode)
+
+def Cookie.render(c: Cookie()) -> String:
+  Http.Cookie.render(c)
 
 def Response.not_found() -> Response():
   Http.Response.not_found()
@@ -208,6 +481,71 @@ def Response.options(allow: String) -> Response():
 
 def Response.bad_request() -> Response():
   Http.Response.bad_request()
+
+# JSON
+# ----
+#
+# Numbers keep their text as written; `u32` reads a non-negative
+# integer out of one. Objects keep field order. Every accessor is total.
+
+def Json.parse(text: String) -> Maybe<&2, Json()>:
+  Json.parse(text)
+
+def Json.render(v: Json()) -> String:
+  Json.render(v)
+
+def Json.null() -> Json():
+  Json.null()
+
+def Json.of_bool(b: Bool) -> Json():
+  Json.of_bool(b)
+
+def Json.of_u32(n: U32) -> Json():
+  Json.of_u32(n)
+
+# A number as written, unchecked: "-1.5e3".
+def Json.num(text: String) -> Json():
+  Json.num(text)
+
+def Json.of_str(s: String) -> Json():
+  Json.of_str(s)
+
+def Json.arr(items: List<&2, Json()>) -> Json():
+  Json.arr(items)
+
+def Json.obj(fields: List<&2, Json.Field()>) -> Json():
+  Json.obj(fields)
+
+def Json.field(key: String, v: Json()) -> Json.Field():
+  Json.field(key, v)
+
+# The first field named `key` of an object.
+def Json.get(v: Json(), key: String) -> Maybe<&2, Json()>:
+  Json.get(v, key)
+
+# The `i`th item of an array.
+def Json.at(v: Json(), i: Nat) -> Maybe<&2, Json()>:
+  Json.at(v, i)
+
+def Json.str(v: Json()) -> Maybe<&2, String>:
+  Json.str(v)
+
+def Json.u32(v: Json()) -> Maybe<&2, U32>:
+  Json.u32(v)
+
+def Json.boolean(v: Json()) -> Maybe<&2, Bool>:
+  Json.boolean(v)
+
+def Json.is_null(v: Json()) -> Bool:
+  Json.is_null(v)
+
+# The items of an array, or [] for anything else.
+def Json.items(v: Json()) -> List<&2, Json()>:
+  Json.items(v)
+
+# The fields of an object, or [] for anything else.
+def Json.fields(v: Json()) -> List<&2, Json.Field()>:
+  Json.fields(v)
 
 # Routing
 # -------

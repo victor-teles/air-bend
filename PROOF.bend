@@ -248,6 +248,282 @@ def Laws.render_head_only():
 def Laws.render_204_has_no_length():
   {==}
 
+def Laws.json_parse_object():
+  {==}
+
+def Laws.json_parse_empty_containers():
+  {==}
+
+def Laws.json_render_escapes():
+  {==}
+
+def Laws.json_render_nested():
+  {==}
+
+def Laws.json_parse_unicode_escape():
+  {==}
+
+def Laws.json_parse_surrogate_pair():
+  {==}
+
+def Laws.json_rejects_lone_surrogate():
+  {==}
+
+def Laws.json_rejects_raw_control():
+  {==}
+
+def Laws.json_rejects_trailing_comma():
+  {==}
+
+def Laws.json_rejects_mismatched_bracket():
+  {==}
+
+def Laws.json_rejects_trailing_garbage():
+  {==}
+
+def Laws.json_rejects_depth():
+  {==}
+
+def Laws.json_accepts_depth_64():
+  {==}
+
+def Laws.json_number_lexeme():
+  {==}
+
+def Laws.json_rejects_bad_numbers():
+  {==}
+
+def Laws.json_rejects_bad_literal():
+  {==}
+
+def Laws.json_get_first_key():
+  {==}
+
+def Laws.json_u32_strict():
+  {==}
+
+def Laws.request_json_parses():
+  {==}
+
+def Laws.request_json_needs_content_type():
+  {==}
+
+def Laws.response_of_json():
+  {==}
+
+def Laws.split_seq_all_pieces():
+  {==}
+
+def Laws.split_seq_all_no_hit():
+  {==}
+
+def Laws.query_all_repeats():
+  {==}
+
+def Laws.query_all_absent():
+  {==}
+
+def Laws.form_decodes():
+  {==}
+
+def Laws.form_needs_media_type():
+  {==}
+
+def Laws.form_all_repeats():
+  {==}
+
+def Laws.media_type_strips_params():
+  {==}
+
+def Laws.boundary_quoted():
+  {==}
+
+def Laws.boundary_wrong_type():
+  {==}
+
+def Laws.multipart_two_parts():
+  {==}
+
+def Laws.multipart_missing_blank():
+  {==}
+
+def Laws.multipart_unterminated():
+  {==}
+
+def Laws.multipart_wrong_type():
+  {==}
+
+def Laws.multipart_field_and_file():
+  {==}
+
+def Laws.cookie_parses():
+  {==}
+
+def Laws.cookie_missing():
+  {==}
+
+def Laws.cookies_in_order():
+  {==}
+
+def Laws.negotiate_thousandths():
+  {==}
+
+def Laws.negotiate_q_order():
+  {==}
+
+def Laws.negotiate_wildcard():
+  {==}
+
+def Laws.negotiate_specific_wins():
+  {==}
+
+def Laws.negotiate_zero_excludes():
+  {==}
+
+def Laws.negotiate_absent_takes_first():
+  {==}
+
+def Laws.negotiate_nothing():
+  {==}
+
+def Laws.negotiate_language_prefix():
+  {==}
+
+def Laws.negotiate_earliest_on_tie():
+  {==}
+
+def Laws.client_ip_untrusted():
+  {==}
+
+def Laws.client_ip_rightmost():
+  {==}
+
+def Laws.client_ip_forwarded():
+  {==}
+
+def Laws.client_ip_absent():
+  {==}
+
+def Laws.scheme_forwarded():
+  {==}
+
+def Laws.host_header():
+  {==}
+
+def Laws.accepts_language_header():
+  {==}
+
+def Laws.fnv1a_known():
+  {==}
+
+def Laws.hex_show_pads():
+  {==}
+
+def Laws.etag_shape():
+  {==}
+
+def Laws.etag_counts_bytes():
+  {==}
+
+def Laws.with_etag_headers():
+  {==}
+
+def Laws.parse_range_forms():
+  {==}
+
+def Laws.parse_range_clamps():
+  {==}
+
+def Laws.parse_range_bad():
+  {==}
+
+def Laws.conditional_304():
+  {==}
+
+def Laws.conditional_weak_and_list():
+  {==}
+
+def Laws.conditional_star():
+  {==}
+
+def Laws.conditional_miss():
+  {==}
+
+def Laws.ranged_206():
+  {==}
+
+def Laws.ranged_suffix():
+  {==}
+
+def Laws.ranged_416():
+  {==}
+
+def Laws.ranged_multibyte_416():
+  {==}
+
+def Laws.ranged_passes_other_methods():
+  {==}
+
+def Laws.chunk_frames():
+  {==}
+
+def Laws.chunk_size_is_hex():
+  {==}
+
+def Laws.last_chunk_ends():
+  {==}
+
+def Laws.sse_event_format():
+  {==}
+
+def Laws.sse_data_format():
+  {==}
+
+def Laws.cookie_render_defaults():
+  {==}
+
+def Laws.cookie_render_full():
+  {==}
+
+def Laws.cookie_same_site_none_forces_secure():
+  {==}
+
+def Laws.cookie_session_has_no_age():
+  {==}
+
+def Laws.expire_cookie_line():
+  {==}
+
+def Laws.render_two_cookies_in_order():
+  {==}
+
+def Laws.with_type_adds_charset():
+  {==}
+
+def Laws.with_type_keeps_binary():
+  {==}
+
+def Laws.with_type_keeps_params():
+  {==}
+
+def Laws.send_infers_html():
+  {==}
+
+def Laws.send_infers_json():
+  {==}
+
+def Laws.send_infers_text():
+  {==}
+
+def Laws.see_other_status():
+  {==}
+
+def Laws.see_other_location():
+  {==}
+
+def Laws.reasons_added():
+  {==}
+
 def Laws.arm_from_now():
   {==}
 

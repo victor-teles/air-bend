@@ -48,9 +48,10 @@ Decisions:
   with `", "`, so `Cookie` sent twice still parses), `Request.version`.
 - `air/text.bend`: `has_token(v, tok)`, `split_all(s, c)`, `split_at(s, c)`,
   `Two()`, `fst`, `snd`, `map_get`.
-- Base `String.trim`, `String.to_lower`, `String.starts_with`, `F32.read`
-  (check `bend base F32` for its existence; if absent, parse q as
-  thousandths into a `U32`: `q=0.8` → 800, which is what the ordering needs).
+- Base `String.trim`, `String.to_lower`, `String.starts_with`. There is no
+  `F32.read` (verified 2026-09-20): parse q as thousandths into a `U32`
+  (`q=0.8` → 800, `q=1` → 1000, up to three decimals), which is all the
+  ordering needs.
 - No `Cookie` handling anywhere; `air.bend` has no `Trust` type.
 
 ## Commands you will need
@@ -167,8 +168,8 @@ useful demo).
 
 ## STOP conditions
 
-- Base lacks `F32.read` *and* thousandths parsing turns out ambiguous for
-  inputs like `q=1.` or `q=.5`; treat malformed as 0 and report.
+- Thousandths parsing turns out ambiguous for inputs like `q=1.` or `q=.5`;
+  treat malformed as 0 and report.
 
 ## Maintenance notes
 

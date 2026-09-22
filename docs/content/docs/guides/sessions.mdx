@@ -1,0 +1,29 @@
+---
+title: Sessions
+description: Server-side sessions named by a cookie token.
+---
+
+`Air.session(cfg)` gives the routes it wraps a session: a random token
+in an `HttpOnly`, `SameSite=Lax` cookie names an entry in the store, and
+handlers read and write fields by name. Wrap the group that needs it,
+`Air.Route.wrap(~Air.session(Air.Session.default()), pages())`, rather
+than the whole app: a client that never sends cookies would mint a
+session per request.
+
+```python
+def count(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(U32, Air.Response(), Air.Session.incr(req, "n"), n => ...)
+```
+
+`Air.Session.get`, `set`, `incr`, `fields`, `clear` (drops the data,
+keeps the token) and `end` (drops the data and expires the cookie on a
+response). Sessions are server-side only: Bend has no HMAC, so a cookie
+cannot carry data safely, and the cookie carries the token alone. They
+live in the process and end with it. A session untouched for the TTL (a
+day by default) is gone, and once the store holds more than `max` of
+them (ten thousand) a request sweeps the expired ones. A token that
+names no live session is replaced, so a guessed or stale cookie never
+attaches to data. Turn on `Air.Session.secure(cfg, True{})` behind the
+TLS proxy. Keys starting with `_` are the framework's. Each session is
+one JSON string in the store's `sessions` namespace, so the rest of the
+store does not slow down as sessions pile up.

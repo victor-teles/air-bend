@@ -1,0 +1,20 @@
+---
+title: Request ids and logging
+description: Give every request an id and print one JSON line per request.
+---
+
+`Air.request_id` gives every request an id, the client's `X-Request-Id`
+when it is safe to print (letters, digits, `-`, `_`, `.`; up to 128) or
+16 hex characters from a random word and the millisecond it started,
+and returns it as `x-request-id`. Handlers
+read it with `Air.Request.id`. `Air.log`, placed inside it, prints one
+JSON line per request:
+
+```json
+{"ts":5161,"id":"a9bf17ed00001429","method":"GET","path":"/","status":200,"ms":1}
+```
+
+`ts` counts milliseconds since the process started: Bend has no wall
+clock, so a log shipper adds the date. The server prints its own line
+only for what the app never sees: a bad request line, a limit, the 503
+on a timeout.

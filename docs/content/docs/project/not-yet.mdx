@@ -1,0 +1,16 @@
+---
+title: Not yet
+description: What Air does not do yet, and why.
+---
+
+- Signals: Bend 2.0.10 has none, so a server stops from inside the process
+  (a route, a timer), not from `kill`. Bend also cannot cancel an effect, so
+  a timeout ends the request but not the receive under it: the socket of a
+  client that goes silent is closed when the client next sends or hangs up,
+  and until then it holds a descriptor. Bound it at a proxy if that matters.
+  A connection is closed after 100000 requests.
+- TLS: not planned in Air. Terminate it at a proxy (nginx, Caddy) and run
+  Air on localhost behind it.
+- Bodies are decoded as UTF-8 text by the runtime's `TCP.recv`. A
+  multi-byte character split across two receives comes through as
+  replacement characters, so binary uploads are not yet safe.

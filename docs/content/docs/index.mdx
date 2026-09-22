@@ -1,0 +1,30 @@
+---
+title: Getting started
+description: A web framework for Bend.
+---
+
+Air is a web framework for [Bend](https://bend-lang.com).
+
+```python title="main.bend"
+import Base
+import ./air.bend as Air
+
+def greet(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("hi " ++ Air.Request.param(req, "name")))
+
+def routes() -> List<Air.Route()>:
+  [Air.Route.get("/hello/:name", greet)]
+
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch(routes(), req)
+
+def main() -> IO(Unit):
+  Air.serve(~app, 8080)
+```
+
+Run the starter example and send it a request:
+
+```bash
+bend examples/hello/main.bend
+curl localhost:8080/hello/world
+```

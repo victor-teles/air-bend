@@ -1,0 +1,15 @@
+{
+  "title": "Guides",
+  "pages": [
+    "middleware",
+    "request-ids-and-logging",
+    "shared-state",
+    "sessions",
+    "rate-limiting",
+    "validation",
+    "templates",
+    "static-files",
+    "cors-and-security-headers",
+    "errors"
+  ]
+}

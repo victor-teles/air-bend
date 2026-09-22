@@ -1,0 +1,30 @@
+---
+title: Validation
+description: Check request bodies, queries and params against a schema.
+---
+
+A schema is a value; `Air.validate_json(schema)` checks the body before
+the handler runs and answers 422 with every problem at once:
+
+```python
+def new_task() -> Air.Schema():
+  Air.Schema.obj([
+    Air.Schema.field("title", Air.Schema.str()),
+    Air.Schema.field("done", Air.Schema.boolean())
+  ])
+
+Air.Route.post("/tasks", Air.validate_json(new_task())(create))
+```
+
+```json
+{"status":422,"error":"Unprocessable Content","errors":["title: expected string","missing: done"]}
+```
+
+Schemas are `str`, `num`, `int` (non-negative, 32-bit), `boolean`,
+`null`, `any`, `one_of(options)`, `arr(each)`, `obj(props)` (unknown
+keys fail) and `obj_open(props)`, with `field` and `optional` for
+props. A body that is not JSON is a 400 through `on_error`; the 422
+bypasses it so clients see the list in prod too. `Air.validate_query`
+and `Air.validate_params` check the query and path params leniently:
+`"42"` is an integer there. There are no range or pattern rules, and
+responses are not validated.

@@ -1,0 +1,31 @@
+---
+title: Errors
+description: Errors are values a handler returns.
+---
+
+Bend has no exceptions, so an error is a value a handler returns:
+
+```python
+def show(req: Air.Request()) -> IO(Air.Response()):
+  Air.fail(Air.Error.not_found("no such user"))
+```
+
+`Air.on_error(render)` is the middleware that turns it into the response
+the client sees. Two renderers ship: `Air.Error.plain(env)` for text and
+`Air.Error.json(env)` for `{"status":404,"error":"Not Found"}`. The
+router's own 404 and 405 pass through it too, and a rendered error keeps
+the headers of the failure it came from, such as the `Allow` of a 405 or
+a cookie a middleware set. With `AIR_ENV=dev` (read
+by `Air.Env.from_env()`) they add the route and the detail; in prod the
+detail never leaves the process, and an app without `on_error` gets the
+same prod rendering from the server.
+
+A fallible effect in a handler goes through `Air.attempt`, which turns
+its failure into a 500 with the message as detail. Never `IO.try` or
+`IO.die` in a handler: both end the process, and nothing can catch them.
+A runtime crash cannot be caught either.
+
+The server's own refusals (a bad request line, a limit, the 503 on
+timeout) happen before the app runs and do not pass through `on_error`.
+A response cannot be sent twice: a handler returns one value and the
+server owns the socket, so there is no guard to add.

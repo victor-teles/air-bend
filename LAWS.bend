@@ -1,16 +1,24 @@
 import Base
-import ./air/text.bend as Text
-import ./air/chunk.bend as Chunk
-import ./air/json.bend as Json
-import ./air/http.bend as Http
-import ./air/form.bend as Form
-import ./air/negotiate.bend as Negotiate
-import ./air/disk.bend as Disk
-import ./air/errors.bend as Errors
-import ./air/router.bend as Router
-import ./air/race.bend as Race
-import ./air/drain.bend as Drain
-import ./air/server.bend as Server
+import ./air/lib/text.bend as Text
+import ./air/lib/chunk.bend as Chunk
+import ./air/lib/json.bend as Json
+import ./air/lib/http.bend as Http
+import ./air/lib/form.bend as Form
+import ./air/lib/negotiate.bend as Negotiate
+import ./air/lib/disk.bend as Disk
+import ./air/lib/static.bend as Static
+import ./air/lib/errors.bend as Errors
+import ./air/lib/random.bend as Random
+import ./air/lib/log.bend as Log
+import ./air/lib/store.bend as Store
+import ./air/lib/rate.bend as Rate
+import ./air/lib/session.bend as Session
+import ./air/lib/cors.bend as Cors
+import ./air/lib/shield.bend as Shield
+import ./air/lib/router.bend as Router
+import ./air/lib/race.bend as Race
+import ./air/lib/drain.bend as Drain
+import ./air/lib/server.bend as Server
 
 # Routing
 # -------
@@ -114,7 +122,7 @@ def request.fin(p: Http.Parsed) -> Http.Request:
     case Http.Parsed{req}:
       req
     case Http.Refused{status}:
-      Http.Request{Http.GET{}, "HTTP/1.1", "/", "/", Map.new(&2, String), Map.new(&2, String), Map.new(&2, String), "", Map.new(&2, String)}
+      Http.Request{Http.GET{}, "HTTP/1.1", "/", "/", Map.new(&2, String), Map.new(&2, String), Map.new(&2, String), "", Map.new(&2, String), None{}}
 
 def request(head: String) -> Http.Request:
   request.fin(Http.Request.parse(Http.Limits.default(), head))
@@ -859,3 +867,251 @@ law json_dev_shape:
 law plain_dev_shape:
   {Http.Response.body(Errors.plain(Http.Dev{}, request("GET /nope HTTP/1.1\r"), Http.NotFound{"d"}))
     == "Not Found\nGET /nope\nd" : String}
+
+# A rendered error keeps what the failed response carried.
+law inherit_keeps_allow:
+  {Http.Response.header(Http.Response.inherit(Http.Response.method_not_allowed("GET"), Http.Response.text("x")), "allow")
+    == "GET" : String}
+
+law inherit_renderer_wins:
+  {Http.Response.header(
+    Http.Response.inherit(
+      Http.Response.with_header(Http.Response.fail(Http.NotFound{""}), "content-type", "a"),
+      Http.Response.text("x")),
+    "content-type") == "text/plain; charset=utf-8" : String}
+
+law inherit_keeps_cookies:
+  {Http.Response.cookies(
+    Http.Response.inherit(
+      Http.Response.with_cookie(Http.Response.fail(Http.NotFound{""}), Http.Cookie.new("a", "1")),
+      Http.Response.text("x")))
+    == [Http.Cookie.render(Http.Cookie.new("a", "1"))] : List<&2, String>}
+
+law default_header_sets_absent:
+  {Http.Response.header(Http.Response.with_default_header(Http.Response.text(""), "x-a", "1"), "x-a") == "1" : String}
+
+law default_header_keeps_present:
+  {Http.Response.header(Http.Response.with_default_header(Http.Response.with_header(Http.Response.text(""), "x-a", "0"), "x-a", "1"), "x-a") == "0" : String}
+
+# CORS
+# ----
+
+law cors_any_allows:
+  {Cors.allowed(Cors.any(), "http://a.test") == True{} : Bool}
+
+law cors_list_exact:
+  {Cors.allowed(Cors.new(["http://a.test"]), "http://a.test:81") == False{} : Bool}
+
+law cors_list_hit:
+  {Cors.allowed(Cors.new(["http://b.test", "http://a.test"]), "http://a.test") == True{} : Bool}
+
+law cors_star_without_creds:
+  {Cors.origin_value(Cors.any(), "http://a.test") == "*" : String}
+
+law cors_echo_with_creds:
+  {Cors.origin_value(Cors.with_credentials(Cors.any(), True{}), "http://a.test") == "http://a.test" : String}
+
+law cors_echo_with_list:
+  {Cors.origin_value(Cors.new(["http://a.test"]), "http://a.test") == "http://a.test" : String}
+
+law cors_vary_appends:
+  {Http.Response.header(Cors.add_vary(Http.Response.with_header(Http.Response.text(""), "vary", "Accept")), "vary")
+    == "Accept, origin" : String}
+
+law cors_vary_once:
+  {Http.Response.header(Cors.add_vary(Http.Response.with_header(Http.Response.text(""), "vary", "Origin")), "vary")
+    == "Origin" : String}
+
+law cors_preflight_echoes_headers:
+  {Http.Response.header(
+    Cors.preflight(Cors.any(), "http://a.test",
+      request("OPTIONS /x HTTP/1.1\r\nOrigin: http://a.test\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: x-a\r")),
+    "access-control-allow-headers") == "x-a" : String}
+
+law cors_preflight_status:
+  {Http.Response.status(Cors.preflight(Cors.any(), "http://a.test", request("OPTIONS /x HTTP/1.1\r\nAccess-Control-Request-Method: POST\r")))
+    == 204 : U32}
+
+law cors_is_preflight:
+  {Cors.is_preflight(request("OPTIONS /x HTTP/1.1\r\nAccess-Control-Request-Method: POST\r")) == True{} : Bool}
+
+law cors_plain_options_not_preflight:
+  {Cors.is_preflight(request("OPTIONS /x HTTP/1.1\r")) == False{} : Bool}
+
+# Shield
+# ------
+
+law shield_default_nosniff:
+  {Http.Response.header(Shield.apply(Shield.default(), Http.Response.text("")), "x-content-type-options") == "nosniff" : String}
+
+law shield_handler_wins:
+  {Http.Response.header(Shield.apply(Shield.default(), Http.Response.with_header(Http.Response.text(""), "x-frame-options", "SAMEORIGIN")), "x-frame-options")
+    == "SAMEORIGIN" : String}
+
+law shield_hsts_opt_in:
+  {Http.Response.header(Shield.apply(Shield.default(), Http.Response.text("")), "strict-transport-security") == "" : String}
+
+law shield_with_hsts:
+  {Http.Response.header(Shield.apply(Shield.with_hsts(Shield.default(), 3600), Http.Response.text("")), "strict-transport-security")
+    == "max-age=3600; includeSubDomains" : String}
+
+law shield_with_header_replaces:
+  {Http.Response.header(Shield.apply(Shield.with_frame(Shield.default(), "SAMEORIGIN"), Http.Response.text("")), "x-frame-options")
+    == "SAMEORIGIN" : String}
+
+# Static files
+# ------------
+
+law static_safe_plain:
+  {Static.safe(["css", "app.css"]) == True{} : Bool}
+
+law static_refuses_dotdot:
+  {Static.safe(["..", "main.bend"]) == False{} : Bool}
+
+law static_refuses_dot:
+  {Static.safe(["a", "."]) == False{} : Bool}
+
+law static_refuses_slash:
+  {Static.safe(["a/b"]) == False{} : Bool}
+
+law static_refuses_backslash:
+  {Static.safe(["a\\b"]) == False{} : Bool}
+
+law static_hides_dotfiles:
+  {Static.safe([".env"]) == False{} : Bool}
+
+law static_refuses_empty:
+  {Static.safe([""]) == False{} : Bool}
+
+law static_mime_html:
+  {Static.mime_of("index.html") == "text/html" : String}
+
+law static_mime_upper:
+  {Static.mime_of("APP.JS") == "text/javascript" : String}
+
+law static_mime_last_dot:
+  {Static.mime_of("dir.v2/archive.tar.gz") == "application/octet-stream" : String}
+
+law static_mime_dotted_dir:
+  {Static.mime_of("dir.v2/README") == "application/octet-stream" : String}
+
+law static_index_root:
+  {Static.target("/", "") == "index.html" : String}
+
+law static_index_dir:
+  {Static.target("/docs/", "docs") == "docs/index.html" : String}
+
+law static_file:
+  {Static.target("/docs/a.css", "docs/a.css") == "docs/a.css" : String}
+
+# Request ids and logging
+# -----------------------
+
+law log_safe_id_plain:
+  {Random.safe_id("abc-123.X_y") == True{} : Bool}
+
+law log_safe_id_empty:
+  {Random.safe_id("") == False{} : Bool}
+
+law log_safe_id_space:
+  {Random.safe_id("a b") == False{} : Bool}
+
+law log_safe_id_long:
+  {Random.safe_id(String.repeat("a", 129n)) == False{} : Bool}
+
+law log_safe_id_max:
+  {Random.safe_id(String.repeat("a", 128n)) == True{} : Bool}
+
+law log_hex_id_len:
+  {Text.byte_length(Random.hex_id(0, 1), 0) == 16 : U32}
+
+law log_hex_id_padded:
+  {Random.hex_id(255, 4096) == "000000ff00001000" : String}
+
+law log_line_escapes:
+  {Log.line(5n, "i", "GET", "/a\"b", 200, 2n)
+    == "{\"ts\":5,\"id\":\"i\",\"method\":\"GET\",\"path\":\"/a\\\"b\",\"status\":200,\"ms\":2}" : String}
+
+# Store and rate limiting
+# -----------------------
+
+law store_ns_default_empty:
+  {Store.ns_of(Map.new(&2, Map<&2, String>), "x") == Map.new(&2, String) : Map<&2, String>}
+
+law request_store_seeded_none:
+  {Http.Request.store(request("GET / HTTP/1.1\r")) == None{} : Maybe<&2, Chan(Map<&2, Map<&2, String>>)>}
+
+law rate_epoch:
+  {Rate.epoch(125000n, 60000) == 2 : U32}
+
+# A map of window 2 with nine hits on `k`.
+def window_two() -> Map<&2, String>:
+  Map.set(&2, String, Map.set(&2, String, Map.new(&2, String), "_epoch", "2"), "k", "9")
+
+law rate_tick_same_window:
+  {Rate.count("k", Rate.tick(2, "k", window_two())) == 10 : U32}
+
+law rate_tick_new_window:
+  {Rate.count("k", Rate.tick(3, "k", window_two())) == 1 : U32}
+
+law rate_tick_other_key:
+  {Rate.count("j", Rate.tick(2, "j", window_two())) == 1 : U32}
+
+law rate_reset_in_min_one:
+  {Rate.reset_in(119999n, 60000) == 1 : U32}
+
+law rate_reset_in_full:
+  {Rate.reset_in(120000n, 60000) == 60 : U32}
+
+law rate_refuse_status:
+  {Http.Response.status(Rate.refuse(5, 60000, 6, 30)) == 429 : U32}
+
+law rate_refuse_retry_after:
+  {Http.Response.header(Rate.refuse(5, 60000, 6, 30), "retry-after") == "30" : String}
+
+law rate_refuse_is_failed:
+  {Http.Response.error(Rate.refuse(5, 60000, 6, 30)) == Some{Http.TooMany{"rate limit: 6 of 5 per 60000 ms"}} : Maybe<&2, Http.Error>}
+
+law rate_remaining_floor:
+  {Http.Response.header(Rate.decorate(5, 9, 1, Http.Response.text("")), "x-ratelimit-remaining") == "0" : String}
+
+law rate_remaining_counts:
+  {Http.Response.header(Rate.decorate(5, 2, 1, Http.Response.text("")), "x-ratelimit-remaining") == "3" : String}
+
+# Sessions
+# --------
+
+law session_alive_fresh:
+  {Session.alive(1000, 500, Session.touch(800, Map.new(&2, String))) == True{} : Bool}
+
+law session_dead_old:
+  {Session.alive(2000, 500, Session.touch(800, Map.new(&2, String))) == False{} : Bool}
+
+law session_dead_unseen:
+  {Session.alive(2000, 500, Map.new(&2, String)) == False{} : Bool}
+
+law session_dead_future:
+  {Session.alive(500, 500, Session.touch(800, Map.new(&2, String))) == False{} : Bool}
+
+law session_encode_decode:
+  {Session.decode(Session.encode(Map.set(&2, String, Session.touch(5, Map.new(&2, String)), "n", "a\"b")))
+    == Map.set(&2, String, Session.touch(5, Map.new(&2, String)), "n", "a\"b") : Map<&2, String>}
+
+law session_decode_garbage:
+  {Session.decode("nope") == Map.new(&2, String) : Map<&2, String>}
+
+# Two sessions, one dead and one live.
+def sessions_mixed() -> Map<&2, String>:
+  Map.set(&2, String,
+    Map.set(&2, String, Map.new(&2, String), "old", Session.encode(Session.touch(100, Map.new(&2, String)))),
+    "new", Session.encode(Session.touch(1900, Map.new(&2, String))))
+
+law session_sweep_keeps_live:
+  {Map.keys(&2, String, Session.sweep(2000, 500, sessions_mixed())) == ["new"] : List<&2, String>}
+
+law session_cookie_defaults:
+  {Http.Cookie.render(Session.cookie(Session.default(), "id")) == "air_session=id; Path=/; HttpOnly; SameSite=Lax" : String}
+
+law session_cookie_secure:
+  {Http.Cookie.render(Session.cookie(Session.secure(Session.default(), True{}), "id"))
+    == "air_session=id; Path=/; Secure; HttpOnly; SameSite=Lax" : String}

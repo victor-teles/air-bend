@@ -13,33 +13,28 @@ import ../../air.bend as Air
 #
 # and open http://localhost:8080.
 
-# Static routes
-# -------------
+# Static files
+# ------------
 #
-# `Air.Response.file` reads the file, tags it with an ETag, and answers
-# 304 or 206 when the browser asks. The first path is right when run
-# from this folder, the second from the repo root.
+# `Air.static` maps the `*path` wildcard onto a file under `public/`,
+# refusing anything that could leave the directory, and answers 304 or
+# 206 when the browser asks. The first directory is right when run from
+# this folder, the second from the repo root.
 
-def serve_file.retry(+req: Air.Request(), name: String, mime: String, first: Air.Response(), missing: Bool) -> IO(Air.Response()):
+def files.retry(req: Air.Request(), first: Air.Response(), missing: Bool) -> IO(Air.Response()):
   match missing:
     case True{}:
-      Air.Response.file(req, "examples/dashboard/public/" ++ name, mime)
+      Air.static("examples/dashboard/public", req)
     case False{}:
       IO.pure(Air.Response(), first)
 
-def serve_file.fin(+req: Air.Request(), name: String, mime: String, first: Air.Response()) -> IO(Air.Response()):
+def files.fin(req: Air.Request(), first: Air.Response()) -> IO(Air.Response()):
   +first = first
-  serve_file.retry(req, name, mime, first, U32.is_eq(Air.Response.status(first), 404))
+  files.retry(req, first, U32.is_eq(Air.Response.status(first), 404))
 
-def serve_file(req: Air.Request(), +name: String, +mime: String) -> IO(Air.Response()):
+def files(req: Air.Request()) -> IO(Air.Response()):
   +req = req
-  IO.bind(Air.Response(), Air.Response(), Air.Response.file(req, "public/" ++ name, mime), serve_file.fin(req, name, mime))
-
-def index(req: Air.Request()) -> IO(Air.Response()):
-  serve_file(req, "index.html", "text/html")
-
-def script(req: Air.Request()) -> IO(Air.Response()):
-  serve_file(req, "app.js", "text/javascript")
+  IO.bind(Air.Response(), Air.Response(), Air.static("public", req), files.fin(req))
 
 # JSON routes
 # -----------
@@ -100,11 +95,10 @@ def shutdown(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
     Air.Switch.flip(switch)
     return Air.Response.of_json(Air.Json.obj([Air.Json.field("stopping", Air.Json.of_bool(True{}))]))
 
+# One route for the page and everything beside it; it goes after the
+# API mount so `/api/...` matches first.
 def pages() -> List<Air.Route()>:
-  [
-    Air.Route.get("/", index),
-    Air.Route.get("/app.js", script)
-  ]
+  [Air.Route.get("/*path", files)]
 
 # The JSON routes, mounted under "/api" below.
 def api(switch: Air.Switch()) -> List<Air.Route()>:
@@ -117,16 +111,25 @@ def api(switch: Air.Switch()) -> List<Air.Route()>:
   ]
 
 def routes(switch: Air.Switch()) -> List<Air.Route()>:
-  Air.Route.all([pages(), Air.Route.mount("/api", api(switch))])
+  Air.Route.all([Air.Route.mount("/api", api(switch)), pages()])
 
 # The app takes the stop switch along with the request, as `serve_until`
-# hands it over, so a route can stop the server. Errors, the router's 404
-# included, are rendered as JSON; `AIR_ENV=dev` adds detail and path.
+# hands it over, so a route can stop the server. Every request gets an
+# id and a log line, every response the default security headers; a front end served elsewhere in development
+# (Vite's port, say) may call the API thanks to `cors`. Errors, the
+# router's 404 included, are rendered as JSON; `AIR_ENV=dev` adds detail
+# and path.
 def base(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
   Air.dispatch(routes(switch), req)
 
 def app.fin(switch: Air.Switch(), req: Air.Request(), env: Air.Env()) -> IO(Air.Response()):
-  Air.use([Air.on_error(Air.Error.json(env))], base(switch))(req)
+  Air.use([
+    Air.request_id,
+    Air.log,
+    Air.shield(Air.Shield.default()),
+    Air.cors(Air.Cors.new(["http://localhost:5173"])),
+    Air.on_error(Air.Error.json(env))
+  ], base(switch))(req)
 
 def app(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
   IO.bind(Air.Env(), Air.Response(), Air.Env.from_env(), app.fin(switch, req))

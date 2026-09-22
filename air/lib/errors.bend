@@ -16,12 +16,14 @@ import ./router.bend as Router
 def Render() -> Type:
   Http.Request -> Http.Error -> Http.Response
 
+# A rendered error keeps the failed response's headers and cookies (the
+# `allow` of a 405, a cookie set upstream); the renderer's own headers win.
 def on_error.fin(render: Render(), req: Http.Request, res: Http.Response, err: Maybe<&2, Http.Error>) -> IO(Http.Response):
   match err:
     case None{}:
       IO.pure(Http.Response, res)
     case Some{e}:
-      IO.pure(Http.Response, render(req, e))
+      IO.pure(Http.Response, Http.Response.inherit(res, render(req, e)))
 
 def on_error.go(render: Render(), req: Http.Request, res: Http.Response) -> IO(Http.Response):
   +res = res

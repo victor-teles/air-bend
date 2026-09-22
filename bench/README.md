@@ -16,6 +16,54 @@ accepts, not that a request failed once accepted.
 Bend's runtime listens with a backlog of 16 (`effs/tcp_listen.c`), which is
 what caps Air at high connection counts.
 
+## 2026-09-21 (after Tier 5 store, rate limiting and sessions), Apple Silicon, 32 connections, 5s
+
+The store field on every request costs nothing measurable. `session`
+wraps only `/count` and `/logout`, so the bench route is untouched;
+the day's runs of it sit between 15k and 17.6k, run-to-run noise.
+Minting a session per request (`/count` without a cookie) sustains
+7-9k req/s across sweeps; the store-only `/visits` holds 13k with 40k
+sessions in the store.
+
+| target                | req/s | p50 ms | errors |
+| --------------------- | ----: | -----: | -----: |
+| Air GET /hello/:name  | 16167 | 1.9    | 0      |
+
+## 2026-09-20 (after Tier 5 request ids and logging), Apple Silicon, 32 connections, 5s
+
+The hello example now runs `Air.request_id` and `Air.log` in place of
+its `timing` middleware, and the server no longer prints a line for app
+responses. `log` alone costs nothing measurable (a JSON line replaces
+the server's plain one). `request_id` costs 15% for its two map sets and
+36 bytes on the wire, and at first another 20% for four random draws:
+each `IO.random_u32` goes through the runtime's worker pool, like a
+system call. An id is now one draw plus the millisecond clock.
+
+| target                | req/s | p50 ms | errors |
+| --------------------- | ----: | -----: | -----: |
+| Air GET /hello/:name  | 17275 | 1.83   | 0      |
+
+## 2026-09-20 (after Tier 5 CORS and shield), Apple Silicon, 32 connections, 5s
+
+The hello example now runs `Air.shield(Air.Shield.default())` and
+`Air.cors(Air.Cors.any())`, so every response carries six more headers,
+about 230 bytes. Measured back to back on the same machine: the Tier 4
+binary served 28.2k GET req/s; with both middleware, 17.5k. `cors` alone
+costs nothing measurable; the whole drop is `shield`, and it is bytes,
+not lookups: six one-letter headers with the same total bytes cost the
+same. Two fixes in this round brought it to 21.4k: the head renderer
+appended each header line to the growing accumulator (quadratic in
+header bytes; now each line goes in front, linear), and the shield's
+fixed names skip the lowercase pass. What remains is the runtime's cost
+per byte of response: 230 bytes more in the body alone cost 16% here, so
+a shield on a tiny response is a visible share. The Node reference sets
+no such headers, so the two columns are no longer the same work.
+
+| target                | req/s | p50 ms | errors |
+| --------------------- | ----: | -----: | -----: |
+| Air GET /hello/:name  | 21358 | 1.59   | 0      |
+| Air POST /echo 1KB    | 10935 | 3.33   | 0      |
+
 ## 2026-09-20 (after Tier 3, Bend 2.0.19), Apple Silicon, 32 connections, 5s
 
 Same load as below, after the request/response work and the toolchain

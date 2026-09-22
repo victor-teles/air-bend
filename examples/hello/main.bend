@@ -53,26 +53,9 @@ def ticks(req: Air.Request()) -> IO(Air.Response()):
 # Middleware
 # ----------
 #
-# A middleware is a def with `next` first. `timing` runs the rest of the
-# chain and logs how long it took. The request is read here and passed
-# on, so it is rebound with `+`; so is the response, read for its status
-# and returned.
-
-def timing.fin(method: String, path: String, before: Nat, res: Air.Response(), after: Nat) -> IO(Air.Response()):
-  +res = res
-  do IO<Air.Response()>:
-    IO.print(method ++ " " ++ path ++ " -> " ++ U32.show(Air.Response.status(res)) ++ " (" ++ Nat.show(Nat.sub(after, before)) ++ " ms)")
-    return res
-
-def timing.go(method: String, path: String, before: Nat, res: Air.Response()) -> IO(Air.Response()):
-  IO.bind(Nat, Air.Response(), IO.now(), timing.fin(method, path, before, res))
-
-def timing(next: Air.Handler(), req: Air.Request()) -> IO(Air.Response()):
-  +req = req
-  do IO<Air.Response()>:
-    before : Nat <- IO.now()
-    res : Air.Response() <- next(req)
-    timing.go(Air.Method.show(Air.Request.method(req)), Air.Request.path(req), before, res)
+# A middleware is a def with `next` first. `Air.request_id` and `Air.log`
+# come with Air: every request gets an id and one JSON log line. A
+# middleware of one's own follows the same shape, as `auth` below.
 
 # `auth` takes its setting before `next`, so `auth("secret")` is a
 # middleware. A request with the right token goes on with a local the
@@ -110,6 +93,45 @@ def env.fin(home: String) -> IO(Air.Response()):
 def env(req: Air.Request()) -> IO(Air.Response()):
   Air.attempt(String, IO.get_env("HOME"), env.fin)
 
+# Shared state
+# ------------
+#
+# The store is one value every request can read and write, in
+# namespaces of strings, behind a lock. `incr` counts; `get`, `set` and
+# `update` (a pure function over a namespace) do the rest.
+
+def visits.fin(n: U32) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text(U32.show(n)))
+
+# `curl localhost:8080/visits` twice answers 1 then 2.
+def visits(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(U32, Air.Response(), Air.Store.incr(req, "app", "visits"), visits.fin)
+
+# Five requests per ten seconds, then 429 with `retry-after`. Without a
+# trusted proxy there is no client address, so every client shares the
+# bucket; `Air.Rate.by_header("x-api-key")` would key on a header.
+def limited(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("still fine"))
+
+# Sessions
+# --------
+#
+# `Air.session` gives the routes it wraps a session, keyed by a cookie;
+# handlers read and write fields by name. It wraps a group rather than
+# the whole app: a client that never sends cookies (a load generator,
+# a bot) would mint a session per request.
+
+def count.fin(n: U32) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text(U32.show(n)))
+
+# `curl -c jar -b jar localhost:8080/count` counts up per browser.
+def count(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(U32, Air.Response(), Air.Session.incr(req, "n"), count.fin)
+
+# Drops the session and its cookie.
+def logout(req: Air.Request()) -> IO(Air.Response()):
+  Air.Session.end(req, Air.Response.text("bye"))
+
 # Routes
 # ------
 
@@ -123,7 +145,15 @@ def public() -> List<Air.Route()>:
     Air.Route.get("/cookie/:name", cookie),
     Air.Route.get("/ticks", ticks),
     Air.Route.get("/boom", boom),
-    Air.Route.get("/env", env)
+    Air.Route.get("/env", env),
+    Air.Route.get("/visits", visits),
+    Air.Route.get("/limited", Air.rate(5, 10000, Air.Rate.by_ip(Air.Trust.none()))(limited))
+  ]
+
+def with_session() -> List<Air.Route()>:
+  [
+    Air.Route.get("/count", count),
+    Air.Route.get("/logout", logout)
   ]
 
 def admin() -> List<Air.Route()>:
@@ -132,17 +162,29 @@ def admin() -> List<Air.Route()>:
 # The admin group is wrapped in `auth` and mounted under "/admin"; the
 # middleware is a template argument, so it is a def applied to a constant.
 def routes() -> List<Air.Route()>:
-  Air.Route.all([public(), Air.Route.mount("/admin", Air.Route.wrap(~auth("secret"), admin()))])
+  Air.Route.all([
+    public(),
+    Air.Route.wrap(~Air.session(Air.Session.default()), with_session()),
+    Air.Route.mount("/admin", Air.Route.wrap(~auth("secret"), admin()))
+  ])
 
 def base(req: Air.Request()) -> IO(Air.Response()):
   Air.dispatch(routes(), req)
 
-# `timing` wraps the whole app, then `on_error` renders failures as
-# plain text; the first middleware in the list is the outermost. `serve`
-# takes the app as a template, which must be a closed term, so the
-# environment is read per request rather than passed in from `main`.
+# `request_id` and `log` wrap the whole app; `shield` adds defensive
+# headers and `cors` lets any origin call; then `on_error` renders
+# failures as plain text. The first middleware in the list is the
+# outermost, so an error response gets the headers and the log line too.
+# `serve` takes the app as a template, which must be a closed term, so
+# the environment is read per request rather than passed in from `main`.
 def app.fin(req: Air.Request(), env: Air.Env()) -> IO(Air.Response()):
-  Air.use([timing, Air.on_error(Air.Error.plain(env))], base)(req)
+  Air.use([
+    Air.request_id,
+    Air.log,
+    Air.shield(Air.Shield.default()),
+    Air.cors(Air.Cors.any()),
+    Air.on_error(Air.Error.plain(env))
+  ], base)(req)
 
 def app(req: Air.Request()) -> IO(Air.Response()):
   IO.bind(Air.Env(), Air.Response(), Air.Env.from_env(), app.fin(req))

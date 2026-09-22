@@ -1,12 +1,19 @@
 import Base
-import ./air/http.bend as Http
-import ./air/json.bend as Json
-import ./air/form.bend as Form
-import ./air/disk.bend as Disk
-import ./air/errors.bend as Errors
-import ./air/router.bend as Router
-import ./air/drain.bend as Drain
-import ./air/server.bend as Server
+import ./air/lib/http.bend as Http
+import ./air/lib/json.bend as Json
+import ./air/lib/form.bend as Form
+import ./air/lib/disk.bend as Disk
+import ./air/lib/static.bend as Static
+import ./air/lib/errors.bend as Errors
+import ./air/lib/log.bend as Log
+import ./air/lib/store.bend as Store
+import ./air/lib/rate.bend as Rate
+import ./air/lib/session.bend as Session
+import ./air/lib/cors.bend as Cors
+import ./air/lib/shield.bend as Shield
+import ./air/lib/router.bend as Router
+import ./air/lib/drain.bend as Drain
+import ./air/lib/server.bend as Server
 
 # Air
 # ===
@@ -42,19 +49,31 @@ import ./air/server.bend as Server
 #   def app(req: Air.Request()) -> IO(Air.Response()):
 #     Air.use([timing], base)(req)
 #
-# This file is the public surface. The work lives in `air/`:
+# This file is the public surface. The work lives in `air/lib/`:
 #
-#   air/text.bend    string helpers that are safe on request buffers
-#   air/chunk.bend   the `Transfer-Encoding: chunked` decoder
-#   air/json.bend    a JSON value, parser and renderer
-#   air/http.bend    Limits, Method, Status, Request (parsing, framing), Response
-#   air/form.bend    multipart/form-data parts
-#   air/disk.bend    files as responses
-#   air/errors.bend  typed errors, their renderers, and effect capture
-#   air/router.bend  Route, Handler, dispatch
-#   air/race.bend    deadlines: an effect raced against a watchdog
-#   air/drain.bend   the stop switch and the tally of requests in flight
-#   air/server.bend  the HTTP/1.1 connection loop over TCP
+#   text.bend     string helpers that are safe on request buffers
+#   chunk.bend    the `Transfer-Encoding: chunked` decoder
+#   json.bend     a JSON value, parser and renderer
+#   http.bend     Limits, Method, Status, Request (parsing, framing), Response
+#   form.bend     multipart/form-data parts
+#   disk.bend     files as responses
+#   static.bend   a directory as a handler
+#   errors.bend   typed errors, their renderers, and effect capture
+#   log.bend      request ids and one log line per request
+#   random.bend   ids and tokens from the host's entropy
+#   store.bend    the shared store every request carries
+#   rate.bend     a fixed-window rate limit over the store
+#   session.bend  cookie-keyed sessions in the store
+#   cors.bend     cross-origin resource sharing, preflight included
+#   shield.bend   defensive response headers
+#   router.bend   Route, Handler, dispatch
+#   race.bend     deadlines: an effect raced against a watchdog
+#   drain.bend    the stop switch and the tally of requests in flight
+#   server.bend   the HTTP/1.1 connection loop over TCP
+#
+# One level down so that a module's C name (`air/lib/json.parse`) can
+# never be the facade's (`air.Json.parse`): the backend would refuse the
+# pair as "two names mangle to" the same symbol.
 #
 # Bend imports are not transitive, so each public name is re-exported
 # here. An app that needs more than this surface (matching on a
@@ -80,6 +99,14 @@ def Timeouts() -> Data:
 
 def Switch() -> Data:
   Drain.Switch()
+
+# The shared store: namespaces of string maps behind a lock; see `Store`.
+def Store() -> Data:
+  Store.Store()
+
+# How sessions are kept; see `session`.
+def Session() -> Data:
+  Session.Config
 
 def Cookie() -> Data:
   Http.Cookie
@@ -113,6 +140,14 @@ def Part() -> Data:
 # Whether to believe forwarding headers; see `Trust.proxy`.
 def Trust() -> Data:
   Http.Trust
+
+# A CORS policy; see `cors`.
+def Cors() -> Data:
+  Cors.Cors
+
+# A list of defensive headers; see `shield`.
+def Shield() -> Data:
+  Shield.Shield()
 
 def Handler() -> Type:
   Router.Handler()
@@ -220,8 +255,21 @@ def Request.param(r: Request(), key: String) -> String:
 def Request.local(r: Request(), key: String) -> String:
   Http.Request.local(r, key)
 
+# The id `request_id` gave this request; "" without that middleware.
+def Request.id(r: Request()) -> String:
+  Http.Request.local(r, "request_id")
+
+# The token of this request's session; "" without `session` above.
+def Request.session_id(r: Request()) -> String:
+  Http.Request.local(r, "session_id")
+
 def Request.with_local(r: Request(), key: String, value: String) -> Request():
   Http.Request.with_local(r, key, value)
+
+# The server's store, on every request it builds; None elsewhere. The
+# `Store` helpers below take the request, so a handler never needs this.
+def Request.store(r: Request()) -> Maybe<&2, Store()>:
+  Http.Request.store(r)
 
 # The content type's media type, lowercased, without parameters.
 def Request.media_type(r: Request()) -> String:
@@ -348,6 +396,14 @@ def Response.with_status(r: Response(), status: U32) -> Response():
 def Response.with_header(r: Response(), name: String, value: String) -> Response():
   Http.Response.with_header(r, name, value)
 
+# Sets a header only when the response lacks it.
+def Response.with_default_header(r: Response(), name: String, value: String) -> Response():
+  Http.Response.with_default_header(r, name, value)
+
+# The `Set-Cookie` lines, in order.
+def Response.cookies(r: Response()) -> List<&2, String>:
+  Http.Response.cookies(r)
+
 def Response.empty(status: U32) -> Response():
   Http.Response.empty(status)
 
@@ -415,9 +471,23 @@ def Sse.data(data: String) -> String:
 # the request's `If-None-Match` has that tag, a 206 for a `Range`, or a
 # 404 when the file cannot be read. Files are read as UTF-8 text, so
 # this is for HTML, CSS, JavaScript, SVG and the like, not images. The
-# path is yours to choose: nothing here guards against `..`.
+# path is yours to choose: nothing here guards against `..`; `static`
+# does, for a whole directory.
 def Response.file(req: Request(), path: String, mime: String) -> IO(Response()):
   Disk.respond(req, path, mime)
+
+# A directory as a handler, on a wildcard route whose param is `path`:
+#
+#   Air.Route.get("/assets/*path", Air.static("public"))
+#
+# serves `public/css/app.css` for `/assets/css/app.css`, with the mime
+# from the extension and everything `Response.file` does. A request
+# cannot leave `dir`: a segment holding `/` or `\` (from `%2F`, `%5C`),
+# `.`, `..` or a dotfile is a 404, as is a missing file. A path ending
+# in `/` serves its `index.html`. There is no listing, and a symlink
+# inside `dir` is followed wherever it points.
+def static(+dir: String, req: Request()) -> IO(Response()):
+  Static.respond(dir, req)
 
 # The same three steps on any response: tag the body with its ETag and
 # offer byte ranges, answer 304 to a matching `If-None-Match`, and
@@ -791,6 +861,231 @@ def on_error(render: Render(), next: Handler(), req: Request()) -> IO(Response()
 def attempt(-A: Type, act: IO(Result<&1, &1, U32 & String, A>), k: A -> IO(Response())) -> IO(Response()):
   Errors.attempt(A, act, k)
 
+# Batteries
+# ---------
+#
+# Middleware that ships with Air. Put them in `use`, outermost first:
+#
+#   Air.use([Air.request_id, Air.log, Air.shield(Air.Shield.default()), Air.cors(Air.Cors.any()), Air.on_error(render)], base)
+#
+# All sit outside `on_error` so an error response gets the headers and
+# the log line too; a rendered error keeps the headers of the failure it
+# came from.
+
+# Gives the request an id: the client's `X-Request-Id` when it is one to
+# 128 characters of letters, digits, `-`, `_` and `.` (what a proxy in
+# front sets), else 16 hex characters from a random word and the
+# millisecond it started. Handlers read it with
+# `Request.id`; the client gets it back as `x-request-id`.
+def request_id(next: Handler(), req: Request()) -> IO(Response()):
+  Log.request_id(next, req)
+
+# Prints one JSON line per request to stdout,
+# `{"ts":5161,"id":"…","method":"GET","path":"/x","status":200,"ms":3}`,
+# with `ts` the start in milliseconds since the process started (Bend
+# has no wall clock; a log shipper adds the date). Put it inside `request_id`
+# so the line has the id. The server itself logs only what the app
+# never sees: bad heads, limits, and the 503 on timeout.
+def log(next: Handler(), req: Request()) -> IO(Response()):
+  Log.log(next, req)
+
+# Cross-origin requests under `cfg`. A request without `Origin`, or from
+# an origin the policy does not list, passes through untouched. A
+# preflight (`OPTIONS` with `Access-Control-Request-Method`) is answered
+# here with 204 and never reaches the router. Any other allowed request
+# runs, and its response carries `Access-Control-Allow-Origin` and
+# `Vary: origin`.
+def cors(cfg: Cors(), next: Handler(), req: Request()) -> IO(Response()):
+  Cors.cors(cfg, next, req)
+
+# Adds each header of `hs` the response lacks; a handler's own wins.
+def shield(hs: Shield(), next: Handler(), req: Request()) -> IO(Response()):
+  Shield.shield(hs, next, req)
+
+# At most `n` requests per `key` per window of `window_ms`. `key` names
+# the bucket from the request: `Rate.by_ip(trust)`, `Rate.by_header(name)`,
+# or a def of the app's. Counts live in the store's `rate` namespace and
+# start over each window, so memory is bounded by the keys seen in one.
+# Over the limit the request fails with 429, `retry-after` and the
+# detail "rate limit: 6 of 5 per 60000 ms"; every response carries
+# `x-ratelimit-limit`, `x-ratelimit-remaining` and `x-ratelimit-reset`
+# (seconds). One route: `Air.rate(5, 60000, key)(handler)`; a group:
+# `Route.wrap(~Air.rate(5, 60000, key), routes)`.
+def rate(+n: U32, +window_ms: U32, key: Request() -> String, next: Handler(), req: Request()) -> IO(Response()):
+  Rate.limit(n, window_ms, key, next, req)
+
+# Gives every request below it a session: the `air_session` cookie's
+# token when it names a live session, else a fresh one, whose cookie the
+# response sets. Data lives in the store under `session:<token>`; the
+# cookie carries the token alone (Bend has no HMAC to sign a cookie
+# with), so sessions end with the process. See `Session.get` and friends.
+def session(+cfg: Session(), next: Handler(), req: Request()) -> IO(Response()):
+  Session.start(cfg, next, req)
+
+# Session
+# -------
+
+# Cookie `air_session`, `Path=/; HttpOnly; SameSite=Lax`, a day of TTL,
+# a sweep of expired sessions once there are more than ten thousand,
+# and not `Secure`: turn that on behind the TLS proxy.
+def Session.default() -> Session():
+  Session.default()
+
+def Session.with_name(cfg: Session(), name: String) -> Session():
+  Session.with_name(cfg, name)
+
+# Milliseconds since the session was last touched before it counts as
+# gone; up to 49 days.
+def Session.with_ttl(cfg: Session(), ms: U32) -> Session():
+  Session.with_ttl(cfg, ms)
+
+# How many sessions the store holds before a request sweeps the expired
+# ones.
+def Session.with_max(cfg: Session(), max: U32) -> Session():
+  Session.with_max(cfg, max)
+
+def Session.secure(cfg: Session(), on: Bool) -> Session():
+  Session.secure(cfg, on)
+
+# A field of the session; "" when absent.
+def Session.get(req: Request(), +key: String) -> IO(String):
+  Session.get(req, key)
+
+# Keys starting with `_` are the framework's; a write to one is dropped.
+def Session.set(req: Request(), +key: String, +value: String) -> IO(Unit):
+  Session.set(req, key, value)
+
+# Adds one to a field holding a number (absent is 0) and answers the
+# new count.
+def Session.incr(req: Request(), +key: String) -> IO(U32):
+  Session.incr(req, key)
+
+# Every field, `_seen` (the last touch, in process milliseconds) included.
+def Session.fields(req: Request()) -> IO(Map<&2, String>):
+  Session.fields(req)
+
+# Drops the data; the token and its cookie stay.
+def Session.clear(req: Request()) -> IO(Unit):
+  Session.clear(req)
+
+# Drops the data and expires the cookie on `res`; the next request gets
+# a new session.
+def Session.end(req: Request(), res: Response()) -> IO(Response()):
+  Session.end(req, res)
+
+# Rate
+# ----
+
+# The client's address as a trusted proxy reports it; without one every
+# request shares one bucket, since `TCP.accept` gives no peer address.
+def Rate.by_ip(+trust: Trust(), req: Request()) -> String:
+  Rate.by_ip(trust, req)
+
+# A header's value, for API keys; absent is one bucket.
+def Rate.by_header(+name: String, req: Request()) -> String:
+  Rate.by_header(name, req)
+
+# Store
+# -----
+#
+# One value shared by every request of a server: namespaces (`ns`) of
+# string maps, behind a lock. A handler reads and writes it through the
+# request. `update` replaces a namespace with a pure function of it and
+# answers the result; keep that function quick, every other request
+# waits on it. A request built outside a server reads empty and writes
+# nowhere. The framework uses the namespaces `rate` and, later,
+# `session:*`; pick others.
+
+# A key of a namespace; "" when absent.
+def Store.get(req: Request(), +ns: String, +key: String) -> IO(String):
+  Store.get_in(req, ns, key)
+
+def Store.set(req: Request(), +ns: String, +key: String, +value: String) -> IO(Unit):
+  Store.set_in(req, ns, key, value)
+
+# Adds one to a key holding a number (absent counts as 0) and answers
+# the new count, atomically.
+def Store.incr(req: Request(), +ns: String, +key: String) -> IO(U32):
+  Store.incr_in(req, ns, key)
+
+# The whole namespace.
+def Store.read(req: Request(), +ns: String) -> IO(Map<&2, String>):
+  Store.read_in(req, ns)
+
+# Replaces the namespace with `f` of it, atomically, and answers the new one.
+def Store.update(req: Request(), +ns: String, f: Map<&2, String> -> Map<&2, String>) -> IO(Map<&2, String>):
+  Store.update_in(req, ns, f)
+
+# Removes a namespace whole.
+def Store.drop(req: Request(), +ns: String) -> IO(Unit):
+  Store.drop_in(req, ns)
+
+# A store of one's own, for `serve_shared`.
+def Store.new() -> IO(Store()):
+  Store.new()
+
+# Cors
+# ----
+
+# Any origin, without credentials: `Access-Control-Allow-Origin: *`.
+def Cors.any() -> Cors():
+  Cors.any()
+
+# Exactly these origins, byte for byte: "https://app.example.com". The
+# request's origin is echoed back.
+def Cors.new(origins: List<&2, String>) -> Cors():
+  Cors.new(origins)
+
+# The comma list for `Access-Control-Allow-Methods`; the default is
+# "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS".
+def Cors.with_methods(cfg: Cors(), methods: String) -> Cors():
+  Cors.with_methods(cfg, methods)
+
+# The comma list for `Access-Control-Allow-Headers`; empty (the default)
+# echoes what the preflight asks for.
+def Cors.with_headers(cfg: Cors(), headers: String) -> Cors():
+  Cors.with_headers(cfg, headers)
+
+# The comma list for `Access-Control-Expose-Headers`.
+def Cors.with_expose(cfg: Cors(), expose: String) -> Cors():
+  Cors.with_expose(cfg, expose)
+
+# Allows cookies and authorization across origins. Browsers refuse `*`
+# with credentials, so the origin is echoed back even under `any`.
+def Cors.with_credentials(cfg: Cors(), on: Bool) -> Cors():
+  Cors.with_credentials(cfg, on)
+
+# Seconds a browser may cache a preflight; 600 by default.
+def Cors.with_max_age(cfg: Cors(), seconds: U32) -> Cors():
+  Cors.with_max_age(cfg, seconds)
+
+# Shield
+# ------
+
+# `x-content-type-options: nosniff`, `x-frame-options: DENY`,
+# `referrer-policy: strict-origin-when-cross-origin`,
+# `cross-origin-opener-policy: same-origin`,
+# `cross-origin-resource-policy: same-origin` and
+# `x-permitted-cross-domain-policies: none`.
+def Shield.default() -> Shield():
+  Shield.default()
+
+# `Strict-Transport-Security` for `seconds`, subdomains included. Off by
+# default: only for a server reached over HTTPS.
+def Shield.with_hsts(hs: Shield(), seconds: U32) -> Shield():
+  Shield.with_hsts(hs, seconds)
+
+def Shield.with_csp(hs: Shield(), policy: String) -> Shield():
+  Shield.with_csp(hs, policy)
+
+# "DENY" or "SAMEORIGIN".
+def Shield.with_frame(hs: Shield(), value: String) -> Shield():
+  Shield.with_frame(hs, value)
+
+# Any header: replaces one of the same name, else appends.
+def Shield.with_header(hs: Shield(), name: String, value: String) -> Shield():
+  Shield.with_header(hs, name, value)
+
 # Server
 # ------
 
@@ -810,6 +1105,12 @@ def serve(~app: Handler(), +port: U32) -> IO(Unit):
 # and they close with it.
 def serve_until(~app: Stoppable(), +limits: Limits(), +timeouts: Timeouts(), +switch: Switch(), +port: U32) -> IO(Unit):
   Server.serve_until(~app, limits, timeouts, switch, port)
+
+# `serve_until` with a store the caller made (`Store.new`), so a task
+# outside the server can read and write what the handlers do; the
+# handlers reach it through the request as always.
+def serve_shared(~app: Stoppable(), +limits: Limits(), +timeouts: Timeouts(), +store: Store(), +switch: Switch(), +port: U32) -> IO(Unit):
+  Server.serve_shared(~app, limits, timeouts, store, switch, port)
 
 # Ends the process with `code`, whatever computations are still parked.
 def exit(code: U32) -> IO(Unit):

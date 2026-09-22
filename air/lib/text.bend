@@ -179,6 +179,17 @@ def digits.go(s: String, +acc: U32, ok: Bool) -> Maybe<&2, U32>:
 def digits(+s: String) -> Maybe<&2, U32>:
   digits.go(s, 0, non_empty(s))
 
+def digits_or.fin(d: Maybe<&2, U32>, +fallback: U32) -> U32:
+  match d:
+    case None{}:
+      fallback
+    case Some{n}:
+      n
+
+# `digits`, with `fallback` for anything that is not one.
+def digits_or(+s: String, +fallback: U32) -> U32:
+  digits_or.fin(digits(s), fallback)
+
 # The lowercase hex digit for 0..15.
 def hex_digit(+n: U32) -> Char:
   Char.from_u32(Bool.pick(U32, U32.is_lt(n, 10), U32.add(48, n), U32.add(87, n)))

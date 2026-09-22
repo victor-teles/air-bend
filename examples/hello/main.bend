@@ -132,6 +132,29 @@ def count(req: Air.Request()) -> IO(Air.Response()):
 def logout(req: Air.Request()) -> IO(Air.Response()):
   Air.Session.end(req, Air.Response.text("bye"))
 
+# Templates
+# ---------
+#
+# A template held in a def and rendered from a JSON context: `{{name}}`
+# is escaped, the list renders once per item, and the empty state shows
+# when there are none. `curl localhost:8080/page/Ada%20%3Cx%3E`.
+
+def page_template() -> String:
+  "<h1>Hello, {{name}}</h1>\n<ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>{{^items}}<p>Nothing yet.</p>{{/items}}\n"
+
+def page(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.view(page_template(), Air.Json.obj([
+    Air.Json.field("name", Air.Json.of_str(Air.Request.param(req, "name"))),
+    Air.Json.field("items", Air.Json.arr([Air.Json.of_str("routing"), Air.Json.of_str("sessions"), Air.Json.of_str("templates")]))
+  ])))
+
+# The empty state: `curl localhost:8080/empty`.
+def empty(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.view(page_template(), Air.Json.obj([
+    Air.Json.field("name", Air.Json.of_str("nobody")),
+    Air.Json.field("items", Air.Json.arr([]))
+  ])))
+
 # Routes
 # ------
 
@@ -147,7 +170,9 @@ def public() -> List<Air.Route()>:
     Air.Route.get("/boom", boom),
     Air.Route.get("/env", env),
     Air.Route.get("/visits", visits),
-    Air.Route.get("/limited", Air.rate(5, 10000, Air.Rate.by_ip(Air.Trust.none()))(limited))
+    Air.Route.get("/limited", Air.rate(5, 10000, Air.Rate.by_ip(Air.Trust.none()))(limited)),
+    Air.Route.get("/page/:name", page),
+    Air.Route.get("/empty", empty)
   ]
 
 def with_session() -> List<Air.Route()>:

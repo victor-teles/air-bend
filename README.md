@@ -128,6 +128,60 @@ keys on a header; a def of the app's can key on anything.
 Air.Route.get("/search", Air.rate(60, 60000, Air.Rate.by_ip(Air.Trust.proxy()))(search))
 ```
 
+## Validation
+
+A schema is a value; `Air.validate_json(schema)` checks the body before
+the handler runs and answers 422 with every problem at once:
+
+```python
+def new_task() -> Air.Schema():
+  Air.Schema.obj([
+    Air.Schema.field("title", Air.Schema.str()),
+    Air.Schema.field("done", Air.Schema.boolean())
+  ])
+
+Air.Route.post("/tasks", Air.validate_json(new_task())(create))
+```
+
+```
+{"status":422,"error":"Unprocessable Content","errors":["title: expected string","missing: done"]}
+```
+
+Schemas are `str`, `num`, `int` (non-negative, 32-bit), `boolean`,
+`null`, `any`, `one_of(options)`, `arr(each)`, `obj(props)` (unknown
+keys fail) and `obj_open(props)`, with `field` and `optional` for
+props. A body that is not JSON is a 400 through `on_error`; the 422
+bypasses it so clients see the list in prod too. `Air.validate_query`
+and `Air.validate_params` check the query and path params leniently:
+`"42"` is an integer there. There are no range or pattern rules, and
+responses are not validated.
+
+## Templates
+
+`Air.Response.view(template, ctx)` renders a Mustache-style template
+against a JSON context and answers it as HTML:
+
+```python
+def page(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.view(
+    "<h1>Hello, {{name}}</h1><ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>{{^items}}<p>Nothing yet.</p>{{/items}}",
+    Air.Json.obj([Air.Json.field("name", Air.Json.of_str(Air.Request.param(req, "name"))), ...])))
+```
+
+| Tag | Renders |
+|---|---|
+| `{{name}}` | the value, HTML-escaped |
+| `{{{name}}}` | the value, raw |
+| `{{#name}}…{{/name}}` | once per array item, once for another truthy value, else nothing |
+| `{{^name}}…{{/name}}` | once when the value is falsy or an empty array |
+| `{{.}}` | the current item |
+| `{{! note }}` | nothing |
+
+Names may be dotted, and a block over a list still sees the outer
+fields. A missing name prints as "". Malformed templates still render.
+There are no partials and no cache: read a template with
+`Air.Disk.read` per request, or hold it in a def.
+
 ## Static files
 
 `Air.static(dir)` is a handler for a wildcard route whose param is

@@ -155,6 +155,18 @@ def Request.query(r: Request, key: String) -> String:
     case Request{m, v, tg, p, q, h, ps, b, l, st}:
       Text.map_get(q, key, SNil{})
 
+# Every query key with its (last) value, for validation.
+def Request.query_map(r: Request) -> Map<&2, String>:
+  match r:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
+      q
+
+# Every path parameter the route bound.
+def Request.params(r: Request) -> Map<&2, String>:
+  match r:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
+      ps
+
 # A path parameter bound by the route, like `:id`; "" when absent.
 def Request.param(r: Request, key: String) -> String:
   match r:

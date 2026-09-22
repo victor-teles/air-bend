@@ -81,6 +81,8 @@ The checker enforces these; the guide only hints at some of them.
   character as `_`, and refuses two live defs that mangle alike. Keep the
   implementation under `air/lib/` (see the layout above) and native-build
   the examples (`bench/run.sh`) after adding facade names.
+- Self-calls must decrease: arguments are read left to right, each passed
+  unchanged until one shrinks. Put the list or fuel being consumed first.
 - `Nat.read` guards overflow against 2^48 built in unary, so a law that
   reaches it never finishes checking. Parse with `Text.digits` into `U32`
   in anything a law touches.

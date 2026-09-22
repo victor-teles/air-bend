@@ -61,15 +61,53 @@ def stats.fin(now: Nat) -> IO(Air.Response()):
 def stats(req: Air.Request()) -> IO(Air.Response()):
   IO.bind(Nat, Air.Response(), IO.now(), stats.fin)
 
-def tasks(req: Air.Request()) -> IO(Air.Response()):
-  IO.pure(Air.Response(), Air.Response.of_json(Air.Json.arr([
+def all_tasks() -> List<&2, Air.Json()>:
+  [
     task(1, "Parse the request line", True{}),
     task(2, "Decode chunked bodies", True{}),
     task(3, "Serve a page with Tailwind", True{}),
     task(4, "Percent-decode paths", True{}),
     task(5, "Parse JSON bodies", True{}),
-    task(6, "Static file middleware", False{})
-  ])))
+    task(6, "Static file middleware", True{}),
+    task(7, "Validate request bodies", False{})
+  ]
+
+def tasks.limit(n: Maybe<&2, U32>) -> Nat:
+  match n:
+    case None{}:
+      100n
+    case Some{k}:
+      U32.to_nat(k)
+
+# `?limit=2` keeps the first two; the query was checked before this ran,
+# so `limit` is absent or an integer.
+def tasks(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.of_json(Air.Json.arr(
+    List.take(&2, Air.Json(), all_tasks(), tasks.limit(U32.read(Air.Request.query(req, "limit")))))))
+
+def tasks_query() -> Air.Schema():
+  Air.Schema.obj_open([Air.Schema.optional("limit", Air.Schema.int())])
+
+# A new task: a title and whether it is done, nothing else.
+def new_task() -> Air.Schema():
+  Air.Schema.obj([
+    Air.Schema.field("title", Air.Schema.str()),
+    Air.Schema.field("done", Air.Schema.boolean())
+  ])
+
+def create.fin(body: Maybe<&2, Air.Json()>) -> Air.Response():
+  match body:
+    case None{}:
+      Air.Response.fail(Air.Error.bad_request("body is not JSON"))
+    case Some{v}:
+      Air.Response.with_status(Air.Response.of_json(Air.Json.obj([
+        Air.Json.field("id", Air.Json.of_u32(8)),
+        Air.Json.field("task", v)
+      ])), 201)
+
+# Runs only for a body that matches `new_task()`.
+def create(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), create.fin(Air.Request.json(req)))
 
 def greet(req: Air.Request()) -> IO(Air.Response()):
   IO.pure(Air.Response(), Air.Response.of_json(Air.Json.obj([
@@ -104,7 +142,8 @@ def pages() -> List<Air.Route()>:
 def api(switch: Air.Switch()) -> List<Air.Route()>:
   [
     Air.Route.get("/stats", stats),
-    Air.Route.get("/tasks", tasks),
+    Air.Route.get("/tasks", Air.validate_query(tasks_query())(tasks)),
+    Air.Route.post("/tasks", Air.validate_json(new_task())(create)),
     Air.Route.get("/hello/:name", greet),
     Air.Route.post("/echo", echo),
     Air.Route.post("/shutdown", shutdown(switch))

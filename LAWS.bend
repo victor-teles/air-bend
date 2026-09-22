@@ -13,6 +13,8 @@ import ./air/lib/log.bend as Log
 import ./air/lib/store.bend as Store
 import ./air/lib/rate.bend as Rate
 import ./air/lib/session.bend as Session
+import ./air/lib/schema.bend as Schema
+import ./air/lib/view.bend as View
 import ./air/lib/cors.bend as Cors
 import ./air/lib/shield.bend as Shield
 import ./air/lib/router.bend as Router
@@ -1115,3 +1117,110 @@ law session_cookie_defaults:
 law session_cookie_secure:
   {Http.Cookie.render(Session.cookie(Session.secure(Session.default(), True{}), "id"))
     == "air_session=id; Path=/; Secure; HttpOnly; SameSite=Lax" : String}
+
+# Schema validation
+# -----------------
+
+law schema_str_ok:
+  {Schema.errors(Schema.str(), Json.of_str("a")) == [] : List<&2, String>}
+
+law schema_str_wrong:
+  {Schema.errors(Schema.str(), Json.of_u32(1)) == ["expected string"] : List<&2, String>}
+
+law schema_obj_missing:
+  {Schema.errors(Schema.obj([Schema.field("a", Schema.str())]), Json.obj([])) == ["missing: a"] : List<&2, String>}
+
+law schema_obj_optional:
+  {Schema.errors(Schema.obj([Schema.optional("a", Schema.str())]), Json.obj([])) == [] : List<&2, String>}
+
+law schema_obj_unknown:
+  {Schema.errors(Schema.obj([]), Json.obj([Json.field("x", Json.null())])) == ["unknown: x"] : List<&2, String>}
+
+law schema_obj_open:
+  {Schema.errors(Schema.obj_open([]), Json.obj([Json.field("x", Json.null())])) == [] : List<&2, String>}
+
+law schema_order:
+  {Schema.errors(
+    Schema.obj([Schema.field("title", Schema.str()), Schema.field("done", Schema.boolean())]),
+    Json.obj([Json.field("title", Json.of_u32(5))]))
+    == ["title: expected string", "missing: done"] : List<&2, String>}
+
+law schema_arr_index:
+  {Schema.errors(Schema.arr(Schema.int()), Json.arr([Json.of_u32(1), Json.of_str("b")])) == ["[1]: expected integer"] : List<&2, String>}
+
+law schema_enum:
+  {Schema.errors(Schema.one_of(["a", "b"]), Json.of_str("c")) == ["expected one of a, b"] : List<&2, String>}
+
+law schema_nested_path:
+  {Schema.errors(
+    Schema.obj([Schema.field("u", Schema.obj([Schema.field("n", Schema.str())]))]),
+    Json.obj([Json.field("u", Json.obj([Json.field("n", Json.null())]))]))
+    == ["u.n: expected string"] : List<&2, String>}
+
+law schema_strict_int:
+  {Schema.errors(Schema.int(), Json.of_str("42")) == ["expected integer"] : List<&2, String>}
+
+law schema_lenient_int:
+  {Schema.check_strings(Schema.obj_open([Schema.field("limit", Schema.int())]), Map.set(&2, String, Map.new(&2, String), "limit", "42"))
+    == [] : List<&2, String>}
+
+law schema_lenient_bad_int:
+  {Schema.check_strings(Schema.obj_open([Schema.field("limit", Schema.int())]), Map.set(&2, String, Map.new(&2, String), "limit", "x"))
+    == ["limit: expected integer"] : List<&2, String>}
+
+law schema_422_body:
+  {Http.Response.body(Schema.unprocessable(["a: expected string"]))
+    == "{\"status\":422,\"error\":\"Unprocessable Content\",\"errors\":[\"a: expected string\"]}" : String}
+
+# Templates
+# ---------
+
+law view_lex_text_var:
+  {View.lex("a {{b}} c") == [View.TText{"a "}, View.TVar{"b"}, View.TText{" c"}] : List<&2, View.Tok>}
+
+law view_lex_raw:
+  {View.lex("{{{b}}}") == [View.TRaw{"b"}] : List<&2, View.Tok>}
+
+law view_lex_section:
+  {View.lex("{{# x }}y{{/x}}") == [View.TOpen{"x"}, View.TText{"y"}, View.TClose{"x"}] : List<&2, View.Tok>}
+
+law view_lex_unterminated:
+  {View.lex("a {{b") == [View.TText{"a "}, View.TText{"{{b"}] : List<&2, View.Tok>}
+
+def one(k: String, v: Json.Value) -> Json.Value:
+  Json.obj([Json.field(k, v)])
+
+law view_escapes:
+  {View.render("<b>{{x}}</b>", one("x", Json.of_str("<&>\"'"))) == "<b>&lt;&amp;&gt;&quot;&#39;</b>" : String}
+
+law view_raw:
+  {View.render("{{{x}}}", one("x", Json.of_str("<i>"))) == "<i>" : String}
+
+law view_missing_empty:
+  {View.render("[{{x}}]", Json.obj([])) == "[]" : String}
+
+law view_list:
+  {View.render("{{#xs}}<{{.}}>{{/xs}}", one("xs", Json.arr([Json.of_u32(1), Json.of_u32(2)]))) == "<1><2>" : String}
+
+law view_inverted:
+  {View.render("{{^xs}}none{{/xs}}", one("xs", Json.arr([]))) == "none" : String}
+
+law view_truthy_object:
+  {View.render("{{#u}}{{name}}{{/u}}", one("u", one("name", Json.of_str("n")))) == "n" : String}
+
+law view_stack_lookup:
+  {View.render("{{#xs}}{{.}}{{sep}}{{/xs}}",
+    Json.obj([Json.field("sep", Json.of_str(",")), Json.field("xs", Json.arr([Json.of_str("a"), Json.of_str("b")]))]))
+    == "a,b," : String}
+
+law view_dotted:
+  {View.render("{{u.name}}", one("u", one("name", Json.of_str("n")))) == "n" : String}
+
+law view_nested_sections:
+  {View.render("{{#a}}{{#b}}x{{/b}}{{/a}}", Json.obj([Json.field("a", Json.of_bool(True{})), Json.field("b", Json.of_bool(True{}))])) == "x" : String}
+
+law view_unclosed_section:
+  {View.render("{{#a}}x", one("a", Json.of_bool(True{}))) == "x" : String}
+
+law view_false_skips:
+  {View.render("[{{#a}}x{{/a}}]", one("a", Json.of_bool(False{}))) == "[]" : String}

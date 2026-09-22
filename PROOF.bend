@@ -844,3 +844,90 @@ def Laws.session_cookie_defaults():
 
 def Laws.session_cookie_secure():
   {==}
+
+def Laws.schema_str_ok():
+  {==}
+
+def Laws.schema_str_wrong():
+  {==}
+
+def Laws.schema_obj_missing():
+  {==}
+
+def Laws.schema_obj_optional():
+  {==}
+
+def Laws.schema_obj_unknown():
+  {==}
+
+def Laws.schema_obj_open():
+  {==}
+
+def Laws.schema_order():
+  {==}
+
+def Laws.schema_arr_index():
+  {==}
+
+def Laws.schema_enum():
+  {==}
+
+def Laws.schema_nested_path():
+  {==}
+
+def Laws.schema_strict_int():
+  {==}
+
+def Laws.schema_lenient_int():
+  {==}
+
+def Laws.schema_lenient_bad_int():
+  {==}
+
+def Laws.schema_422_body():
+  {==}
+
+def Laws.view_lex_text_var():
+  {==}
+
+def Laws.view_lex_raw():
+  {==}
+
+def Laws.view_lex_section():
+  {==}
+
+def Laws.view_lex_unterminated():
+  {==}
+
+def Laws.view_escapes():
+  {==}
+
+def Laws.view_raw():
+  {==}
+
+def Laws.view_missing_empty():
+  {==}
+
+def Laws.view_list():
+  {==}
+
+def Laws.view_inverted():
+  {==}
+
+def Laws.view_truthy_object():
+  {==}
+
+def Laws.view_stack_lookup():
+  {==}
+
+def Laws.view_dotted():
+  {==}
+
+def Laws.view_nested_sections():
+  {==}
+
+def Laws.view_unclosed_section():
+  {==}
+
+def Laws.view_false_skips():
+  {==}

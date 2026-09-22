@@ -9,6 +9,8 @@ import ./air/lib/log.bend as Log
 import ./air/lib/store.bend as Store
 import ./air/lib/rate.bend as Rate
 import ./air/lib/session.bend as Session
+import ./air/lib/schema.bend as Schema
+import ./air/lib/view.bend as View
 import ./air/lib/cors.bend as Cors
 import ./air/lib/shield.bend as Shield
 import ./air/lib/router.bend as Router
@@ -64,6 +66,8 @@ import ./air/lib/server.bend as Server
 #   store.bend    the shared store every request carries
 #   rate.bend     a fixed-window rate limit over the store
 #   session.bend  cookie-keyed sessions in the store
+#   schema.bend   schemas and the middleware that validates with them
+#   view.bend     HTML templates over a JSON context
 #   cors.bend     cross-origin resource sharing, preflight included
 #   shield.bend   defensive response headers
 #   router.bend   Route, Handler, dispatch
@@ -107,6 +111,14 @@ def Store() -> Data:
 # How sessions are kept; see `session`.
 def Session() -> Data:
   Session.Config
+
+# A description of a JSON value; see `validate_json`.
+def Schema() -> Data:
+  Schema.Schema
+
+# A field of an object schema.
+def Schema.Prop() -> Data:
+  Schema.Prop()
 
 def Cookie() -> Data:
   Http.Cookie
@@ -516,6 +528,10 @@ def Response.send(body: String) -> Response():
 def Response.with_type(r: Response(), mime: String) -> Response():
   Http.Response.with_type(r, mime)
 
+# A 200 with `template` rendered against `ctx` as HTML; see `View.render`.
+def Response.view(+template: String, ctx: Json()) -> Response():
+  View.respond(template, ctx)
+
 # A 302.
 def Response.redirect(url: String) -> Response():
   Http.Response.redirect(url)
@@ -921,6 +937,103 @@ def rate(+n: U32, +window_ms: U32, key: Request() -> String, next: Handler(), re
 # with), so sessions end with the process. See `Session.get` and friends.
 def session(+cfg: Session(), next: Handler(), req: Request()) -> IO(Response()):
   Session.start(cfg, next, req)
+
+# The body must be JSON (by content type, and parse) matching `schema`,
+# or the request is answered here: 400 through `on_error` when the body
+# is not JSON, 422 with every problem when it does not match:
+#
+#   {"status":422,"error":"Unprocessable Content","errors":["title: expected string","missing: done"]}
+#
+# The 422 bypasses `on_error` on purpose, so the client sees the list in
+# prod too. One route: `Air.Route.post("/tasks", Air.validate_json(task())(create))`,
+# with `task()` a def building the schema. The handler reads the body
+# again with `Request.json`.
+def validate_json(schema: Schema(), next: Handler(), req: Request()) -> IO(Response()):
+  Schema.validate_json(schema, next, req)
+
+# The query string against an object schema, leniently: `?limit=42`
+# passes `Schema.int()`, `?on=true` passes `Schema.boolean()`. List the
+# keys with `Schema.obj_open` unless unknown keys should fail too.
+def validate_query(schema: Schema(), next: Handler(), req: Request()) -> IO(Response()):
+  Schema.validate_query(schema, next, req)
+
+# The path params against an object schema, leniently.
+def validate_params(schema: Schema(), next: Handler(), req: Request()) -> IO(Response()):
+  Schema.validate_params(schema, next, req)
+
+# Schema
+# ------
+#
+# No min, max, pattern or length rules: check a range in the handler
+# after validation.
+
+def Schema.any() -> Schema():
+  Schema.any()
+
+def Schema.str() -> Schema():
+  Schema.str()
+
+def Schema.num() -> Schema():
+  Schema.num()
+
+# A non-negative integer that fits in 32 bits.
+def Schema.int() -> Schema():
+  Schema.int()
+
+def Schema.boolean() -> Schema():
+  Schema.boolean()
+
+def Schema.null() -> Schema():
+  Schema.null()
+
+# A string among `options`.
+def Schema.one_of(options: List<&2, String>) -> Schema():
+  Schema.one_of(options)
+
+def Schema.arr(each: Schema()) -> Schema():
+  Schema.arr(each)
+
+# An object that refuses keys it does not list.
+def Schema.obj(props: List<&2, Schema.Prop()>) -> Schema():
+  Schema.obj(props)
+
+# An object that lets other keys through.
+def Schema.obj_open(props: List<&2, Schema.Prop()>) -> Schema():
+  Schema.obj_open(props)
+
+def Schema.field(name: String, s: Schema()) -> Schema.Prop():
+  Schema.field(name, s)
+
+# A field that may be absent; when present it must match.
+def Schema.optional(name: String, s: Schema()) -> Schema.Prop():
+  Schema.optional(name, s)
+
+# Every problem, in document order; [] when `value` matches.
+def Schema.errors(s: Schema(), value: Json()) -> List<&2, String>:
+  Schema.errors(s, value)
+
+# View
+# ----
+
+# `template` rendered against `ctx`, in a Mustache subset:
+#
+#   {{name}}             the value, HTML-escaped (`& < > " '`)
+#   {{{name}}}           the value, raw
+#   {{#name}}..{{/name}} once per item of an array, once for any other
+#                        truthy value (with it as the context), else not
+#   {{^name}}..{{/name}} once when the value is falsy or an empty array
+#   {{.}}                the current item
+#   {{! note }}          a comment
+#
+# Names may be dotted (`user.name`), and a block over a list still sees
+# the outer fields. Missing names print as "". Malformed templates
+# render, never fail. No partials. A template from disk:
+#
+#   IO.bind(Maybe<&2, String>, Air.Response(), Air.Disk.read("views/page.html"), t => ...)
+#
+# with `None` answered by `Air.fail(Air.Error.internal("template missing"))`.
+def View.render(+template: String, ctx: Json()) -> String:
+  View.render(template, ctx)
 
 # Session
 # -------

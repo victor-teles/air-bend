@@ -66,9 +66,9 @@ Tier 5 — Batteries
 - [x] Rate limiting — `Air.rate(n, window_ms, key)` middleware (`air/lib/rate.bend`), a fixed window over the shared store (`air/lib/store.bend`: namespaces of string maps behind a one-slot channel, carried on every request since a template app cannot close over state); 429 with `Retry-After` and `X-RateLimit-*`; keys by trusted client IP or a header
 - [x] Sessions — `Air.session(cfg)` middleware (`air/lib/session.bend`): server-side in the store's `sessions` namespace as one JSON string per token, a 32-hex token in an `HttpOnly` `SameSite=Lax` cookie, TTL with a lazy sweep past `max` sessions; signed cookies rejected, no HMAC in Bend; `Air.Session.get/set/incr/fields/clear/end`
 - [x] Request ID + structured request logging — `Air.request_id` keeps a safe client id or mints 16 hex chars (one random word plus the clock: a draw is a worker-pool trip), sets `x-request-id`; `Air.log` prints one JSON line per request (`air/lib/log.bend`); the server logs refusals only; `ts` is process uptime, Bend has no wall clock
-- [ ] Schema validation hooks (params/query/body/response)
-- [ ] Template/view rendering
-- [ ] WebSocket upgrade handling
+- [x] Schema validation hooks (params/query/body/response) — `Air.validate_json/query/params(schema)` middleware (`air/lib/schema.bend`): a schema value, every error listed with its path, 422 as JSON bypassing `on_error`; query and params lenient; response validation rejected (a re-parse on the hot path for what laws give)
+- [x] Template/view rendering — `Air.Response.view(template, ctx)` and `Air.View.render` (`air/lib/view.bend`): a Mustache subset over a `Json` context, escaped by default, sections, inverted sections, dotted names and an outward lookup stack; malformed templates render; no partials, no cache
+- [x] WebSocket upgrade handling — rejected: `TCP.recv` decodes the socket as UTF-8 text and there is no bytes receive, while every client frame is masked binary; SSE (`Air.Response.sse`) covers server push until the runtime gains one
 
 Tier 6 — DX & ops
 Type inference from route definitions (params, body, response) if you're in TS — this is the main reason people pick a new framework in 2026

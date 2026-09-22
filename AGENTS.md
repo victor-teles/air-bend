@@ -3,16 +3,24 @@
 A web framework written in Bend 2 (`bend --version` → 2.0.10). Layout:
 
 - `air.bend`: the public surface. Import it as `Air`. It re-exports the
-  modules under `air/` (imports are not transitive in Bend):
-  - `air/text.bend`: string helpers that are safe on request buffers (`Text`).
-  - `air/chunk.bend`: the chunked transfer-coding decoder (`Chunk`).
-  - `air/http.bend`: Limits, Method, Status, Request parsing and framing, Response (`Http`).
-  - `air/router.bend`: Route, Handler, dispatch (`Router`).
-  - `air/race.bend`: deadlines as a race between an effect and a watchdog (`Race`).
-  - `air/drain.bend`: the stop switch and the tally of requests in flight (`Drain`).
-  - `air/server.bend`: Timeouts and the HTTP/1.1 connection loop over TCP (`Server`).
-  New features go in a new or existing `air/` module; `air.bend` only gains
-  a wrapper when the name is meant for apps.
+  modules under `air/lib/` (imports are not transitive in Bend):
+  - `air/lib/text.bend`: string helpers that are safe on request buffers (`Text`).
+  - `air/lib/chunk.bend`: the chunked transfer-coding decoder (`Chunk`).
+  - `air/lib/http.bend`: Limits, Method, Status, Request parsing and framing, Response (`Http`).
+  - `air/lib/router.bend`: Route, Handler, dispatch (`Router`).
+  - `air/lib/race.bend`: deadlines as a race between an effect and a watchdog (`Race`).
+  - `air/lib/drain.bend`: the stop switch and the tally of requests in flight (`Drain`).
+  - `air/lib/server.bend`: Timeouts and the HTTP/1.1 connection loop over TCP (`Server`).
+  - `air/lib/json.bend`, `form.bend`, `negotiate.bend`, `disk.bend`, `static.bend`,
+    `errors.bend`, `log.bend`, `random.bend`, `store.bend`, `rate.bend`,
+    `session.bend`, `cors.bend`, `shield.bend`: the batteries.
+  New features go in a new or existing `air/lib/` module; `air.bend` only
+  gains a wrapper when the name is meant for apps. The modules sit one
+  level down on purpose: the C backend names a def by its path with every
+  punctuation mark turned into `_`, so `air.Json.parse` (the facade) and
+  `air/json.parse` (a module) would be the same C symbol and the native
+  build would fail with "two names mangle to"; `air/lib/json.parse` cannot
+  collide with anything in the facade.
 - `examples/`: one folder per demo app, each with a `main.bend` and a README.
   - `examples/hello/`: the four-route starter. Run with `bend examples/hello/main.bend`.
   - `examples/dashboard/`: an HTML page with JavaScript and Tailwind served
@@ -66,6 +74,18 @@ The checker enforces these; the guide only hints at some of them.
 - A def named after a JavaScript reserved word (`await`) checks but breaks
   the JS backend. An absolute import path with a `-` in it does the same;
   scratch drivers must import with relative paths from inside the repo.
+- A `match` with many string-literal arms (`case "html":` times thirteen)
+  compiles into something that makes the program take many times longer
+  to start. Use a `Map` for lookup tables.
+- The C backend mangles `path.Def.name` with every non-alphanumeric
+  character as `_`, and refuses two live defs that mangle alike. Keep the
+  implementation under `air/lib/` (see the layout above) and native-build
+  the examples (`bench/run.sh`) after adding facade names.
+- Self-calls must decrease: arguments are read left to right, each passed
+  unchanged until one shrinks. Put the list or fuel being consumed first.
+- `Nat.read` guards overflow against 2^48 built in unary, so a law that
+  reaches it never finishes checking. Parse with `Text.digits` into `U32`
+  in anything a law touches.
 - Runtime: non-tail recursion on long data overflows the machine stack.
   `String.append(a, b)` recurses on `a`, `Nat.add(a, b)` on `a`,
   `String.length` and `String.split` on the whole string. Keep lengths in

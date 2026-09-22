@@ -5,6 +5,7 @@ import ./http.bend as Http
 import ./router.bend as Router
 import ./race.bend as Race
 import ./drain.bend as Drain
+import ./store.bend as Store
 
 # Server
 # ======
@@ -106,31 +107,36 @@ def Timeouts.step(+t: Timeouts) -> U32:
 # What a connection carries: the settings, the app's stop switch, the
 # server's gate, and the connection's own clock.
 type Ctx is Data:
-  Ctx{limits: Http.Limits, timeouts: Timeouts, switch: Chan(Unit), gate: Chan(Drain.Tally), clock: Race.Clock}
+  Ctx{limits: Http.Limits, timeouts: Timeouts, switch: Chan(Unit), gate: Chan(Drain.Tally), store: Chan(Store.Shelf()), clock: Race.Clock}
 
 def Ctx.limits(+c: Ctx) -> Http.Limits:
   match c:
-    case Ctx{limits, timeouts, switch, gate, clock}:
+    case Ctx{limits, timeouts, switch, gate, store, clock}:
       limits
 
 def Ctx.timeouts(+c: Ctx) -> Timeouts:
   match c:
-    case Ctx{limits, timeouts, switch, gate, clock}:
+    case Ctx{limits, timeouts, switch, gate, store, clock}:
       timeouts
 
 def Ctx.switch(+c: Ctx) -> Chan(Unit):
   match c:
-    case Ctx{limits, timeouts, switch, gate, clock}:
+    case Ctx{limits, timeouts, switch, gate, store, clock}:
       switch
 
 def Ctx.gate(+c: Ctx) -> Chan(Drain.Tally):
   match c:
-    case Ctx{limits, timeouts, switch, gate, clock}:
+    case Ctx{limits, timeouts, switch, gate, store, clock}:
       gate
+
+def Ctx.store(+c: Ctx) -> Chan(Store.Shelf()):
+  match c:
+    case Ctx{limits, timeouts, switch, gate, store, clock}:
+      store
 
 def Ctx.clock(+c: Ctx) -> Race.Clock:
   match c:
-    case Ctx{limits, timeouts, switch, gate, clock}:
+    case Ctx{limits, timeouts, switch, gate, store, clock}:
       clock
 
 def Ctx.head_max(+c: Ctx) -> U32:
@@ -395,6 +401,7 @@ type Next is Type:
   Again{sock: Socket, rest: String}
   Stop{}
 
+# A refusal the app never saw: a bad head, a limit, the 503 on timeout.
 def log(method: String, path: String, +status: U32) -> IO(Unit):
   IO.print(method ++ " " ++ path ++ " -> " ++ U32.show(status))
 
@@ -608,12 +615,12 @@ def respond.pick(+ctx: Ctx, sock: Socket, +req: Http.Request, rest: String, +res
 
 # Writes the app's response. The connection stays open when both the
 # request and the response allow it. An error no middleware rendered is
-# settled here in prod style, so the wire never carries a detail.
+# settled here in prod style, so the wire never carries a detail. No
+# log line here: that is the app's (`Log.log`); the server logs only
+# what the app never saw.
 def respond(+ctx: Ctx, sock: Socket, +req: Http.Request, rest: String, res: Http.Response) -> IO(Next):
   +res = Http.Response.settle(Http.Prod{}, res)
-  do IO<Next>:
-    log(Http.Method.show(Http.Request.method(req)), Http.Request.path(req), Http.Response.status(res))
-    respond.pick(ctx, sock, req, rest, res, Http.Response.payload(res))
+  respond.pick(ctx, sock, req, rest, res, Http.Response.payload(res))
 
 # App
 # ---
@@ -633,7 +640,7 @@ def on_app(+ctx: Ctx, sock: Socket, +req: Http.Request, rest: String, r: Race.Ra
 def run(~app: Chan(Unit) -> Router.Handler(), +ctx: Ctx, sock: Socket, +req: Http.Request, rest: String, body: String) -> IO(Next):
   do IO<Next>:
     gen : U32 <- arm(ctx, Timeouts.app(Ctx.timeouts(ctx)))
-    r : Race.Raced<Http.Response> <- Race.within(Http.Response, drop_reply, Ctx.clock(ctx), gen, app(Ctx.switch(ctx), Http.Request.with_body(req, body)))
+    r : Race.Raced<Http.Response> <- Race.within(Http.Response, drop_reply, Ctx.clock(ctx), gen, app(Ctx.switch(ctx), Http.Request.with_store(Http.Request.with_body(req, body), Some{Ctx.store(ctx)})))
     on_app(ctx, sock, req, rest, r)
 
 def on_body(~app: Chan(Unit) -> Router.Handler(), +ctx: Ctx, +req: Http.Request, state: BodyState) -> IO(Next):
@@ -790,8 +797,8 @@ def conn.go(~app: Chan(Unit) -> Router.Handler(), +ctx: Ctx, sock: Socket) -> IO
 
 # One connection: requests in turn until one side closes or a phase
 # runs out of time. The clock stops with the connection.
-def conn(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +switch: Chan(Unit), +gate: Chan(Drain.Tally), sock: Socket) -> IO(Unit):
-  IO.bind(Race.Clock, Unit, Race.Clock.new(Timeouts.step(timeouts)), clock => conn.go(~app, Ctx{limits, timeouts, switch, gate, clock}, sock))
+def conn(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +switch: Chan(Unit), +gate: Chan(Drain.Tally), +store: Chan(Store.Shelf()), sock: Socket) -> IO(Unit):
+  IO.bind(Race.Clock, Unit, Race.Clock.new(Timeouts.step(timeouts)), clock => conn.go(~app, Ctx{limits, timeouts, switch, gate, store, clock}, sock))
 
 # Accepting
 # ---------
@@ -800,11 +807,11 @@ type Serving is Type:
   Serving{listener: Listener}
   Closed{}
 
-def admit(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +switch: Chan(Unit), +gate: Chan(Drain.Tally), listener: Listener, sock: Socket, open: Bool) -> IO(Serving):
+def admit(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +switch: Chan(Unit), +gate: Chan(Drain.Tally), +store: Chan(Store.Shelf()), listener: Listener, sock: Socket, open: Bool) -> IO(Serving):
   match open:
     case True{}:
       do IO<Serving>:
-        IO.spawn(Unit, conn(~app, limits, timeouts, switch, gate, sock))
+        IO.spawn(Unit, conn(~app, limits, timeouts, switch, gate, store, sock))
         return Serving{listener}
     case False{}:
       do IO<Serving>:
@@ -812,7 +819,7 @@ def admit(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts:
         Listener.close(listener)
         return Closed{}
 
-def accepted(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +switch: Chan(Unit), +gate: Chan(Drain.Tally), r: AcceptR()) -> IO(Serving):
+def accepted(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +switch: Chan(Unit), +gate: Chan(Drain.Tally), +store: Chan(Store.Shelf()), r: AcceptR()) -> IO(Serving):
   (listener, res) = r
   match res:
     case Fail{e}:
@@ -822,9 +829,9 @@ def accepted(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeou
     case Done{sock}:
       do IO<Serving>:
         open : Bool <- Drain.is_open(gate)
-        admit(~app, limits, timeouts, switch, gate, listener, sock, open)
+        admit(~app, limits, timeouts, switch, gate, store, listener, sock, open)
 
-def loop(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +switch: Chan(Unit), +gate: Chan(Drain.Tally), fuel: Nat, state: Serving) -> IO(Unit):
+def loop(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +switch: Chan(Unit), +gate: Chan(Drain.Tally), +store: Chan(Store.Shelf()), fuel: Nat, state: Serving) -> IO(Unit):
   match fuel state:
     case _ Closed{}:
       IO.pure(Unit, Unit{})
@@ -833,8 +840,8 @@ def loop(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: 
     case 1n+p Serving{listener}:
       do IO<Unit>:
         r : AcceptR() <- TCP.accept(listener)
-        next : Serving <- accepted(~app, limits, timeouts, switch, gate, r)
-        loop(~app, limits, timeouts, switch, gate, p, next)
+        next : Serving <- accepted(~app, limits, timeouts, switch, gate, store, r)
+        loop(~app, limits, timeouts, switch, gate, store, p, next)
 
 # Stopping
 # --------
@@ -867,14 +874,22 @@ def stopped(+gate: Chan(Drain.Tally), drained: Bool) -> IO(Unit):
         n : U32 <- Drain.count(gate)
         IO.print("air: stopped with " ++ U32.show(n) ++ " in flight")
 
-def serve_until.go(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +switch: Chan(Unit), +port: U32, listener: Listener, gate: Chan(Drain.Tally)) -> IO(Unit):
+def serve_shared.go(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +store: Chan(Store.Shelf()), +switch: Chan(Unit), +port: U32, listener: Listener, gate: Chan(Drain.Tally)) -> IO(Unit):
   +g = gate
   do IO<Unit>:
     IO.spawn(Unit, stopper(switch, g, port))
     IO.print("air: listening on http://localhost:" ++ U32.show(port))
-    loop(~app, limits, timeouts, switch, g, 4294967295n, Serving{listener})
+    loop(~app, limits, timeouts, switch, g, store, 4294967295n, Serving{listener})
     drained : Bool <- Drain.wait_for(g, Timeouts.drain(timeouts))
     stopped(g, drained)
+
+# `serve_until` with the store made by the caller, so a task outside the
+# server (a sweeper, a feed) can share it. Every request carries it.
+def serve_shared(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +store: Chan(Store.Shelf()), +switch: Chan(Unit), +port: U32) -> IO(Unit):
+  do IO<Unit>:
+    listener : Listener <- IO.try(Listener, TCP.listen(port))
+    gate : Chan(Drain.Tally) <- Drain.Gate.new()
+    serve_shared.go(~app, limits, timeouts, store, switch, port, listener, gate)
 
 # Serves `app` on `port` until `switch` is flipped, then stops accepting,
 # waits up to the drain timeout for the requests in flight, and returns.
@@ -882,10 +897,7 @@ def serve_until.go(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +
 # requests are not waited for; their computations end when the peer
 # closes or the process exits.
 def serve_until(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +switch: Chan(Unit), +port: U32) -> IO(Unit):
-  do IO<Unit>:
-    listener : Listener <- IO.try(Listener, TCP.listen(port))
-    gate : Chan(Drain.Tally) <- Drain.Gate.new()
-    serve_until.go(~app, limits, timeouts, switch, port, listener, gate)
+  IO.bind(Chan(Store.Shelf()), Unit, Store.new(), store => serve_shared(~app, limits, timeouts, store, switch, port))
 
 # Serves `app` on `port` under `limits` and the default timeouts until
 # the process is killed.

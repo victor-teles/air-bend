@@ -109,74 +109,99 @@ type Request is Data:
     headers: Map<&2, String>,
     params: Map<&2, String>,
     body: String,
-    locals: Map<&2, String>
+    locals: Map<&2, String>,
+    store: Maybe<&2, Chan(Map<&2, Map<&2, String>>)>
   }
 
 def Request.method(r: Request) -> Method:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
       m
 
 # "HTTP/1.1" or "HTTP/1.0", as the request line said.
 def Request.version(r: Request) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
       v
 
 # The request-target as received: raw path and query, undecoded.
 def Request.target(r: Request) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
       tg
 
 # The path in its normal form: percent-decoded, `.` and `..` resolved,
 # repeated slashes collapsed, a trailing slash kept. `*` for `OPTIONS *`.
 def Request.path(r: Request) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
       p
 
 def Request.body(r: Request) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
       b
 
 # A header by name, case-insensitive; "" when absent. A repeated header
 # reads as its values joined with ", ".
 def Request.header(r: Request, name: String) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
       Text.map_get(h, String.to_lower(name), SNil{})
 
 # A query-string value; "" when absent.
 def Request.query(r: Request, key: String) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
       Text.map_get(q, key, SNil{})
+
+# Every query key with its (last) value, for validation.
+def Request.query_map(r: Request) -> Map<&2, String>:
+  match r:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
+      q
+
+# Every path parameter the route bound.
+def Request.params(r: Request) -> Map<&2, String>:
+  match r:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
+      ps
 
 # A path parameter bound by the route, like `:id`; "" when absent.
 def Request.param(r: Request, key: String) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
       Text.map_get(ps, key, SNil{})
 
 # A value a middleware left for the handlers after it, like `param`;
 # "" when absent. Locals are strings, as params and query are.
 def Request.local(r: Request, key: String) -> String:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
       Text.map_get(l, key, SNil{})
 
 # Every local, for logging.
 def Request.locals(r: Request) -> Map<&2, String>:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
       l
+
+# The server's shared store, one per process, that `Store` reads and
+# writes through; None on a request built outside a server.
+def Request.store(r: Request) -> Maybe<&2, Chan(Map<&2, Map<&2, String>>)>:
+  match r:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
+      st
+
+def Request.with_store(r: Request, store: Maybe<&2, Chan(Map<&2, Map<&2, String>>)>) -> Request:
+  match r:
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
+      Request{m, v, tg, p, q, h, ps, b, l, store}
 
 def Request.with_local(r: Request, key: String, value: String) -> Request:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
-      Request{m, v, tg, p, q, h, ps, b, Map.set(&2, String, l, key, value)}
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
+      Request{m, v, tg, p, q, h, ps, b, Map.set(&2, String, l, key, value), st}
 
 # The content type's media type: lowercased, without parameters.
 def Request.media_type(r: Request) -> String:
@@ -198,13 +223,13 @@ def Request.json(+r: Request) -> Maybe<&2, Json.Value>:
 
 def Request.with_params(r: Request, params: Map<&2, String>) -> Request:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
-      Request{m, v, tg, p, q, h, params, b, l}
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
+      Request{m, v, tg, p, q, h, params, b, l, st}
 
 def Request.with_body(r: Request, body: String) -> Request:
   match r:
-    case Request{m, v, tg, p, q, h, ps, b, l}:
-      Request{m, v, tg, p, q, h, ps, body, l}
+    case Request{m, v, tg, p, q, h, ps, b, l, st}:
+      Request{m, v, tg, p, q, h, ps, body, l, st}
 
 def Request.joined(old: String, v: String) -> String:
   match old:
@@ -682,7 +707,8 @@ def Request.parse.fin(method: String, version: String, target: String, url_ok: B
         h,
         Map.new(&2, String),
         SNil{},
-        Map.new(&2, String)
+        Map.new(&2, String),
+        None{}
       }}
 
 # Splits the target once into path and query, then normalizes each.
@@ -1007,6 +1033,45 @@ def Response.with_header(r: Response, name: String, value: String) -> Response:
   match r:
     case Response{s, h, c, b}:
       Response{s, Map.set(&2, String, h, String.to_lower(name), value), c, b}
+
+# Sets a header only when the response lacks it, so a handler's own
+# value wins over a middleware's default. `with_default_lower` takes a
+# name already lowercase, sparing the pass over it: what the shield's
+# fixed names use.
+def Response.with_default_lower.go(s: U32, h: Map<&2, String>, c: List<&2, String>, b: Body, +name: String, value: String, present: Bool) -> Response:
+  match present:
+    case True{}:
+      Response{s, h, c, b}
+    case False{}:
+      Response{s, Map.set(&2, String, h, name, value), c, b}
+
+def Response.with_default_lower(r: Response, +name: String, value: String) -> Response:
+  match r:
+    case Response{s, +h, c, b}:
+      Response.with_default_lower.go(s, h, c, b, name, value, Text.non_empty(Text.map_get(h, name, SNil{})))
+
+def Response.with_default_header(r: Response, name: String, value: String) -> Response:
+  Response.with_default_lower(r, String.to_lower(name), value)
+
+# The rendered `Set-Cookie` lines, in order.
+def Response.cookies(r: Response) -> List<&2, String>:
+  match r:
+    case Response{s, h, c, b}:
+      c
+
+# `r` with the headers and cookies of `from` underneath its own: what a
+# renderer builds keeps what the failed response carried, such as the
+# `allow` of a 405 or a cookie a middleware set. `r`'s headers win on a
+# clash; cookies are `from`'s first.
+def Response.inherit.go(fh: Map<&2, String>, fc: List<&2, String>, r: Response) -> Response:
+  match r:
+    case Response{s, h, c, b}:
+      Response{s, Map.union(&2, String, fh, h), List.append(&2, String, fc, c), b}
+
+def Response.inherit(from: Response, r: Response) -> Response:
+  match from:
+    case Response{s, h, c, b}:
+      Response.inherit.go(h, c, r)
 
 def Response.empty(status: U32) -> Response:
   Response.new(status, SNil{})
@@ -1469,19 +1534,23 @@ def Response.render_header(kv: Text.Two()) -> String:
   (k, v) = kv
   k ++ ": " ++ v ++ "\r\n"
 
+# `kvs` comes reversed and each line is put in front of `acc`, so the
+# small operand of `++` is always on the left: a head with many headers
+# renders in time linear in its bytes, not quadratic.
 def Response.render_headers(kvs: List<&2, Text.Two()>, acc: String) -> String:
   match kvs:
     case Nil{}:
       acc
     case Con{kv, t}:
-      Response.render_headers(t, acc ++ Response.render_header(kv))
+      Response.render_headers(t, Response.render_header(kv) ++ acc)
 
+# `lines` reversed too; the result goes after the headers.
 def Response.render_cookies(lines: List<&2, String>, acc: String) -> String:
   match lines:
     case Nil{}:
       acc
     case Con{line, t}:
-      Response.render_cookies(t, acc ++ "set-cookie: " ++ line ++ "\r\n")
+      Response.render_cookies(t, "set-cookie: " ++ line ++ "\r\n" ++ acc)
 
 def Response.render_body(body: String, omit: Bool) -> String:
   match omit:
@@ -1500,10 +1569,9 @@ def Response.render_length(+n: U32, +status: U32) -> String:
 def Response.render_start(+status: U32, headers: Map<&2, String>, cookies: List<&2, String>, +keep: Bool) -> String:
   "HTTP/1.1 " ++ U32.show(status) ++ " " ++ Status.reason(status) ++ "\r\n"
     ++ Response.render_headers(
-         Map.to_list(&2, String,
-           Map.set(&2, String, headers, "connection", Bool.pick(String, keep, "keep-alive", "close"))),
-         SNil{})
-    ++ Response.render_cookies(cookies, SNil{})
+         List.reverse(&2, Text.Two(), Map.to_list(&2, String,
+           Map.set(&2, String, headers, "connection", Bool.pick(String, keep, "keep-alive", "close")))),
+         Response.render_cookies(List.reverse(&2, String, cookies), SNil{}))
 
 def Response.render_framing(chunked: Bool) -> String:
   match chunked:

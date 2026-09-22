@@ -646,3 +646,288 @@ def Laws.json_dev_shape():
 
 def Laws.plain_dev_shape():
   {==}
+
+def Laws.inherit_keeps_allow():
+  {==}
+
+def Laws.inherit_renderer_wins():
+  {==}
+
+def Laws.inherit_keeps_cookies():
+  {==}
+
+def Laws.default_header_sets_absent():
+  {==}
+
+def Laws.default_header_keeps_present():
+  {==}
+
+def Laws.cors_any_allows():
+  {==}
+
+def Laws.cors_list_exact():
+  {==}
+
+def Laws.cors_list_hit():
+  {==}
+
+def Laws.cors_star_without_creds():
+  {==}
+
+def Laws.cors_echo_with_creds():
+  {==}
+
+def Laws.cors_echo_with_list():
+  {==}
+
+def Laws.cors_vary_appends():
+  {==}
+
+def Laws.cors_vary_once():
+  {==}
+
+def Laws.cors_preflight_echoes_headers():
+  {==}
+
+def Laws.cors_preflight_status():
+  {==}
+
+def Laws.cors_is_preflight():
+  {==}
+
+def Laws.cors_plain_options_not_preflight():
+  {==}
+
+def Laws.shield_default_nosniff():
+  {==}
+
+def Laws.shield_handler_wins():
+  {==}
+
+def Laws.shield_hsts_opt_in():
+  {==}
+
+def Laws.shield_with_hsts():
+  {==}
+
+def Laws.shield_with_header_replaces():
+  {==}
+
+def Laws.static_safe_plain():
+  {==}
+
+def Laws.static_refuses_dotdot():
+  {==}
+
+def Laws.static_refuses_dot():
+  {==}
+
+def Laws.static_refuses_slash():
+  {==}
+
+def Laws.static_refuses_backslash():
+  {==}
+
+def Laws.static_hides_dotfiles():
+  {==}
+
+def Laws.static_refuses_empty():
+  {==}
+
+def Laws.static_mime_html():
+  {==}
+
+def Laws.static_mime_upper():
+  {==}
+
+def Laws.static_mime_last_dot():
+  {==}
+
+def Laws.static_mime_dotted_dir():
+  {==}
+
+def Laws.static_index_root():
+  {==}
+
+def Laws.static_index_dir():
+  {==}
+
+def Laws.static_file():
+  {==}
+
+def Laws.log_safe_id_plain():
+  {==}
+
+def Laws.log_safe_id_empty():
+  {==}
+
+def Laws.log_safe_id_space():
+  {==}
+
+def Laws.log_safe_id_long():
+  {==}
+
+def Laws.log_safe_id_max():
+  {==}
+
+def Laws.log_hex_id_len():
+  {==}
+
+def Laws.log_hex_id_padded():
+  {==}
+
+def Laws.log_line_escapes():
+  {==}
+
+def Laws.store_ns_default_empty():
+  {==}
+
+def Laws.request_store_seeded_none():
+  {==}
+
+def Laws.rate_epoch():
+  {==}
+
+def Laws.rate_tick_same_window():
+  {==}
+
+def Laws.rate_tick_new_window():
+  {==}
+
+def Laws.rate_tick_other_key():
+  {==}
+
+def Laws.rate_reset_in_min_one():
+  {==}
+
+def Laws.rate_reset_in_full():
+  {==}
+
+def Laws.rate_refuse_status():
+  {==}
+
+def Laws.rate_refuse_retry_after():
+  {==}
+
+def Laws.rate_refuse_is_failed():
+  {==}
+
+def Laws.rate_remaining_floor():
+  {==}
+
+def Laws.rate_remaining_counts():
+  {==}
+
+def Laws.session_encode_decode():
+  {==}
+
+def Laws.session_decode_garbage():
+  {==}
+
+def Laws.session_alive_fresh():
+  {==}
+
+def Laws.session_dead_old():
+  {==}
+
+def Laws.session_dead_unseen():
+  {==}
+
+def Laws.session_dead_future():
+  {==}
+
+def Laws.session_sweep_keeps_live():
+  {==}
+
+def Laws.session_cookie_defaults():
+  {==}
+
+def Laws.session_cookie_secure():
+  {==}
+
+def Laws.schema_str_ok():
+  {==}
+
+def Laws.schema_str_wrong():
+  {==}
+
+def Laws.schema_obj_missing():
+  {==}
+
+def Laws.schema_obj_optional():
+  {==}
+
+def Laws.schema_obj_unknown():
+  {==}
+
+def Laws.schema_obj_open():
+  {==}
+
+def Laws.schema_order():
+  {==}
+
+def Laws.schema_arr_index():
+  {==}
+
+def Laws.schema_enum():
+  {==}
+
+def Laws.schema_nested_path():
+  {==}
+
+def Laws.schema_strict_int():
+  {==}
+
+def Laws.schema_lenient_int():
+  {==}
+
+def Laws.schema_lenient_bad_int():
+  {==}
+
+def Laws.schema_422_body():
+  {==}
+
+def Laws.view_lex_text_var():
+  {==}
+
+def Laws.view_lex_raw():
+  {==}
+
+def Laws.view_lex_section():
+  {==}
+
+def Laws.view_lex_unterminated():
+  {==}
+
+def Laws.view_escapes():
+  {==}
+
+def Laws.view_raw():
+  {==}
+
+def Laws.view_missing_empty():
+  {==}
+
+def Laws.view_list():
+  {==}
+
+def Laws.view_inverted():
+  {==}
+
+def Laws.view_truthy_object():
+  {==}
+
+def Laws.view_stack_lookup():
+  {==}
+
+def Laws.view_dotted():
+  {==}
+
+def Laws.view_nested_sections():
+  {==}
+
+def Laws.view_unclosed_section():
+  {==}
+
+def Laws.view_false_skips():
+  {==}

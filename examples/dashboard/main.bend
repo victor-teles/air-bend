@@ -13,33 +13,28 @@ import ../../air.bend as Air
 #
 # and open http://localhost:8080.
 
-# Static routes
-# -------------
+# Static files
+# ------------
 #
-# `Air.Response.file` reads the file, tags it with an ETag, and answers
-# 304 or 206 when the browser asks. The first path is right when run
-# from this folder, the second from the repo root.
+# `Air.static` maps the `*path` wildcard onto a file under `public/`,
+# refusing anything that could leave the directory, and answers 304 or
+# 206 when the browser asks. The first directory is right when run from
+# this folder, the second from the repo root.
 
-def serve_file.retry(+req: Air.Request(), name: String, mime: String, first: Air.Response(), missing: Bool) -> IO(Air.Response()):
+def files.retry(req: Air.Request(), first: Air.Response(), missing: Bool) -> IO(Air.Response()):
   match missing:
     case True{}:
-      Air.Response.file(req, "examples/dashboard/public/" ++ name, mime)
+      Air.static("examples/dashboard/public", req)
     case False{}:
       IO.pure(Air.Response(), first)
 
-def serve_file.fin(+req: Air.Request(), name: String, mime: String, first: Air.Response()) -> IO(Air.Response()):
+def files.fin(req: Air.Request(), first: Air.Response()) -> IO(Air.Response()):
   +first = first
-  serve_file.retry(req, name, mime, first, U32.is_eq(Air.Response.status(first), 404))
+  files.retry(req, first, U32.is_eq(Air.Response.status(first), 404))
 
-def serve_file(req: Air.Request(), +name: String, +mime: String) -> IO(Air.Response()):
+def files(req: Air.Request()) -> IO(Air.Response()):
   +req = req
-  IO.bind(Air.Response(), Air.Response(), Air.Response.file(req, "public/" ++ name, mime), serve_file.fin(req, name, mime))
-
-def index(req: Air.Request()) -> IO(Air.Response()):
-  serve_file(req, "index.html", "text/html")
-
-def script(req: Air.Request()) -> IO(Air.Response()):
-  serve_file(req, "app.js", "text/javascript")
+  IO.bind(Air.Response(), Air.Response(), Air.static("public", req), files.fin(req))
 
 # JSON routes
 # -----------
@@ -66,15 +61,53 @@ def stats.fin(now: Nat) -> IO(Air.Response()):
 def stats(req: Air.Request()) -> IO(Air.Response()):
   IO.bind(Nat, Air.Response(), IO.now(), stats.fin)
 
-def tasks(req: Air.Request()) -> IO(Air.Response()):
-  IO.pure(Air.Response(), Air.Response.of_json(Air.Json.arr([
+def all_tasks() -> List<&2, Air.Json()>:
+  [
     task(1, "Parse the request line", True{}),
     task(2, "Decode chunked bodies", True{}),
     task(3, "Serve a page with Tailwind", True{}),
     task(4, "Percent-decode paths", True{}),
     task(5, "Parse JSON bodies", True{}),
-    task(6, "Static file middleware", False{})
-  ])))
+    task(6, "Static file middleware", True{}),
+    task(7, "Validate request bodies", False{})
+  ]
+
+def tasks.limit(n: Maybe<&2, U32>) -> Nat:
+  match n:
+    case None{}:
+      100n
+    case Some{k}:
+      U32.to_nat(k)
+
+# `?limit=2` keeps the first two; the query was checked before this ran,
+# so `limit` is absent or an integer.
+def tasks(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.of_json(Air.Json.arr(
+    List.take(&2, Air.Json(), all_tasks(), tasks.limit(U32.read(Air.Request.query(req, "limit")))))))
+
+def tasks_query() -> Air.Schema():
+  Air.Schema.obj_open([Air.Schema.optional("limit", Air.Schema.int())])
+
+# A new task: a title and whether it is done, nothing else.
+def new_task() -> Air.Schema():
+  Air.Schema.obj([
+    Air.Schema.field("title", Air.Schema.str()),
+    Air.Schema.field("done", Air.Schema.boolean())
+  ])
+
+def create.fin(body: Maybe<&2, Air.Json()>) -> Air.Response():
+  match body:
+    case None{}:
+      Air.Response.fail(Air.Error.bad_request("body is not JSON"))
+    case Some{v}:
+      Air.Response.with_status(Air.Response.of_json(Air.Json.obj([
+        Air.Json.field("id", Air.Json.of_u32(8)),
+        Air.Json.field("task", v)
+      ])), 201)
+
+# Runs only for a body that matches `new_task()`.
+def create(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), create.fin(Air.Request.json(req)))
 
 def greet(req: Air.Request()) -> IO(Air.Response()):
   IO.pure(Air.Response(), Air.Response.of_json(Air.Json.obj([
@@ -100,33 +133,42 @@ def shutdown(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
     Air.Switch.flip(switch)
     return Air.Response.of_json(Air.Json.obj([Air.Json.field("stopping", Air.Json.of_bool(True{}))]))
 
+# One route for the page and everything beside it; it goes after the
+# API mount so `/api/...` matches first.
 def pages() -> List<Air.Route()>:
-  [
-    Air.Route.get("/", index),
-    Air.Route.get("/app.js", script)
-  ]
+  [Air.Route.get("/*path", files)]
 
 # The JSON routes, mounted under "/api" below.
 def api(switch: Air.Switch()) -> List<Air.Route()>:
   [
     Air.Route.get("/stats", stats),
-    Air.Route.get("/tasks", tasks),
+    Air.Route.get("/tasks", Air.validate_query(tasks_query())(tasks)),
+    Air.Route.post("/tasks", Air.validate_json(new_task())(create)),
     Air.Route.get("/hello/:name", greet),
     Air.Route.post("/echo", echo),
     Air.Route.post("/shutdown", shutdown(switch))
   ]
 
 def routes(switch: Air.Switch()) -> List<Air.Route()>:
-  Air.Route.all([pages(), Air.Route.mount("/api", api(switch))])
+  Air.Route.all([Air.Route.mount("/api", api(switch)), pages()])
 
 # The app takes the stop switch along with the request, as `serve_until`
-# hands it over, so a route can stop the server. Errors, the router's 404
-# included, are rendered as JSON; `AIR_ENV=dev` adds detail and path.
+# hands it over, so a route can stop the server. Every request gets an
+# id and a log line, every response the default security headers; a front end served elsewhere in development
+# (Vite's port, say) may call the API thanks to `cors`. Errors, the
+# router's 404 included, are rendered as JSON; `AIR_ENV=dev` adds detail
+# and path.
 def base(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
   Air.dispatch(routes(switch), req)
 
 def app.fin(switch: Air.Switch(), req: Air.Request(), env: Air.Env()) -> IO(Air.Response()):
-  Air.use([Air.on_error(Air.Error.json(env))], base(switch))(req)
+  Air.use([
+    Air.request_id,
+    Air.log,
+    Air.shield(Air.Shield.default()),
+    Air.cors(Air.Cors.new(["http://localhost:5173"])),
+    Air.on_error(Air.Error.json(env))
+  ], base(switch))(req)
 
 def app(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
   IO.bind(Air.Env(), Air.Response(), Air.Env.from_env(), app.fin(switch, req))

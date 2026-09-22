@@ -23,6 +23,14 @@ before any commit, and update your row when done.
 | 010  | Onion middleware: `use`, `Route.wrap`, per-request locals | P1 | M | — | DONE (2026-09-20; 5 laws; live: timing log, 401 short-circuit with no handler run, local read through `wrap(~auth("secret"))`, public route untouched, and `[outer, inner]` printed in/in/out/out; server untouched) |
 | 011  | Typed errors, `fail`, `on_error` renderer, dev/prod, `attempt` | P1 | M | 010 | DONE (2026-09-20; 14 laws incl. byte-identical 404 render; live: /boom, /nope, 401, 405 with detail+route in dev and reason only in prod; dashboard 404 and bad echo as JSON; `attempt` on unset HOME → 500; without `on_error` the server settles with no detail even in dev; HEAD /nope head only. `Other` renamed `Status` since `Method.Other` exists; `Status.reasons` moved above `Error`) |
 
+| 012  | Static files from a directory, traversal-safe | P1 | S | — | DONE (2026-09-20; 14 laws; live on the dashboard from both working directories: index and app.js with mime and ETag, 304, 206; `..%2F`, `..%5C` and a dotfile → 404 as JSON; `%2e%2e` above root → 400 from the parser; `/api/nope` still JSON 404; HEAD head only. A `match` on 13 string literals made the example take 41 s to start; a `Map` table takes 7 s) |
+| 013  | CORS with preflight, security headers; failed responses keep headers | P1 | M | — | DONE (2026-09-20; 22 laws; bench: shield's six headers cost 28.2k→17.5k GET req/s at first, bytes not lookups; header rendering made linear and the shield skips lowercasing, now 21.4k, numbers and cause in `bench/README.md`; live on hello: 405 now carries `allow`, preflight 204 with the five CORS headers and `vary: origin`, simple request gets `*`, no-origin request gets none, /boom 500 keeps CORS headers, SSE's own `cache-control` untouched by shield; on the dashboard: evil origin gets no CORS headers, localhost:5173 is echoed, JSON 404 keeps them, preflight 204) |
+| 014  | Request IDs, structured log line; server logs refusals only | P1 | S | — | DONE (2026-09-20; 8 laws; bench 21.4k→17.3k GET req/s, the map sets and wire bytes of the id; four random draws cost 20% more since each is a worker-pool trip, so an id is one draw plus the clock, 16 hex; live: minted 16-hex id in header and line, `abc-123` kept, `<script>`, `a b` and 200 chars replaced, /boom line with 500, garbage head logged by the server only with no JSON line, 405 keeps `allow` and gets an id; one line per app response on both examples. `IO.now` is process uptime, not epoch: `ts` documented as such) |
+| 015  | Store on every request; fixed-window rate limiter | P1 | M | 013 | DONE (2026-09-20; 13 laws; live: /visits 1, 2, then six parallel curls gave 3..8 with no repeat; /limited five 200s with remaining 4..0 then 429 with `retry-after`, `x-ratelimit-*` and the `on_error` body; window reset after 10 s; /hello carries no limit headers; bench 17.6k GET req/s, the store field is free; the limited route serves 13.5k 429/s through the lock. Added `Store.incr` and `Text.digits_or` for counters) |
+| 016  | Cookie-keyed server-side sessions with TTL | P2 | M | 014, 015 | DONE (2026-09-21; 9 laws; live: first visit mints a 32-hex cookie and answers 1, the jar answers 2 with no `set-cookie`, another jar 1; a forged all-zero token and `<script>` are replaced; /logout expires the cookie and the old jar mints anew; /boom on a first visit sets the cookie on the 500; TTL 2 s: after 3 s the jar gets a new cookie; max 2: four sessions then three expire and one survives the sweep. Ids moved to `random.bend` with `token()` of four draws; the session clock is U32 ms because `Nat.read` cannot be law-checked. Bench: a client without cookies mints per request, first at 27 req/s (every mint swept once the tally passed `max`, fixed: the tally restarts at zero), then the store-only route fell to 5k with 60k sessions in the shelf, fixed by keeping each session as one JSON string in a `sessions` namespace: minting sustains 7-9k req/s and the store route 13k with 40k sessions; `session` wraps only its routes in the example. Native builds exposed a C-name collision between the facade and same-named module defs, present since plan 004's Json facade: every module moved to `air/lib/`, see the findings) |
+| 017  | Schema values; validate body, query, params | P2 | M | — | DONE (2026-09-22; 14 laws; live on the native dashboard: valid POST 201; `{"title":5,"extra":1}` 422 with three errors in document order; `nope` and a text/plain body 400 via `on_error`; `?limit=abc` 422, `?limit=2` two tasks, none all seven; 422 keeps shield and request-id headers. The checker walks a work list with fuel, since Bend forbids mutual recursion; `optional` is an `SOpt` wrapper so one recursive type suffices) |
+| 018  | Mustache-style HTML templates over a JSON context | P2 | M | — | DONE (2026-09-22; 15 laws; live on native hello: `/page/Ada%20%3Cx%3E` escaped heading and three items, `/empty` the empty state; a 10,000-item section rendered natively to 128,890 bytes without a stack overflow. The checker's termination rule, that the first changed argument must shrink, forced `find_frame` and `walk` to take the list first) |
+
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
 ## Dependency notes
@@ -40,6 +48,14 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 - Tier 4: 011 requires 010 because `on_error` is a middleware in the
   `use` shape and its examples wrap the app with `use`. 010 is
   independent of everything and does not touch the server.
+- Tier 5 (planned 2026-09-20 at `13be69e`): 013 first, because its step 1
+  fixes `on_error` dropping the headers of a failed response (a 405 loses
+  `Allow` today; 015's `Retry-After` and 016's `Set-Cookie` on error
+  responses need the fix). 015 changes `Request` (a `store` field) and the
+  server's `Ctx`; do it before 016 and, to keep one `Request` literal
+  change, before or after 012/017/018 but not interleaved with them. 016
+  needs 014's random ids. 012, 014, 017 and 018 are independent of each
+  other. Suggested order: 013, 012, 014, 015, 016, 017, 018.
 
 ## Roadmap Tier 2 coverage
 
@@ -92,6 +108,20 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 | Dev vs prod error rendering | 011: `Air.Env` from `AIR_ENV`; `Error.plain(env)` / `Error.json(env)` show detail, method and path in dev only; the server never writes detail |
 | Response-already-sent guard | 011: by construction (one `IO(Response)` per handler, socket owned by the server); documented, no code |
 
+## Roadmap Tier 5 coverage
+
+| Roadmap item | Plan |
+|---|---|
+| Static file serving (with path traversal protection) | 012 (`Air.static(dir)` on a `*path` route; refuses `..`, `/` or `\` inside a segment, dotfiles; `index.html` for directories) |
+| CORS, including preflight | 013 (`Air.cors(cfg)`; preflight answered before the router) |
+| Security headers | 013 (`Air.shield(hs)`; handler's own header wins; HSTS and CSP opt-in) |
+| Rate limiting | 015 (fixed window over the store; `Retry-After` and `X-RateLimit-*`; keyed by trusted client IP or a header) |
+| Sessions | 016 (server-side in the store, random id in a cookie, TTL with a lazy sweep) |
+| Request ID + structured request logging | 014 (`Air.request_id`, `Air.log`; the server keeps its line for refusals only) |
+| Schema validation hooks (params/query/body/response) | 017 (body, query, params; response validation rejected) |
+| Template/view rendering | 018 (`Air.View.render`, `Air.Response.view`; Mustache subset over `Json`) |
+| WebSocket upgrade handling | rejected, see below |
+
 ## Findings considered and rejected
 
 - Radix tree: handlers are affine closures rebuilt per request, so a tree
@@ -132,4 +162,66 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   before they reach `IO.try`.
 - `Accept`-driven choice between the plain and JSON error renderers: an
   app composes `Request.accepts` with the two shipped renderers itself.
+- Bug fixed in 013: `on_error` replaced a failed response with the
+  renderer's and dropped its headers, so a 405 lost `Allow` (seen live on
+  the hello example at planning time). `Http.Response.inherit` now keeps
+  the failure's headers and cookies under the renderer's own.
+- The C backend names a def by its import path with every punctuation
+  mark as `_` and refuses two live defs that mangle alike (seen in 016
+  while native-building: `Air.Store.drop` in `air.bend` and `drop` in
+  `air/store.bend` both became `AIR_STORE_DROP`; the dashboard's
+  `Air.Json.of_u32` had the same problem since plan 004, never caught
+  because only the hello example was built natively). Pure aliases are
+  merged away, which is why most facade names survived. Fix: every
+  module now lives in `air/lib/`, so a module symbol carries `AIR_LIB_`
+  and can never equal a facade one. `bench/run.sh` builds hello natively;
+  build the dashboard natively too after touching the facade.
+- Base `Map` costs more per operation as it grows (seen in 016): with
+  60k keys of 40 characters, a get-and-set of an unrelated short key
+  took 43 µs against 0.5 µs on an empty map, measured natively. Keep any
+  unbounded population (sessions) inside one value rather than as many
+  keys of a map that every request touches.
+- `Nat.read` (seen in 016): its overflow guard is `Nat.read.max()`,
+  2^48 built by `Nat.mul` of two `U32.to_nat`, divided per digit. Fine at
+  run time, but a law that reaches it never finishes checking (a five-law
+  `bend PROOF.bend` ran past four minutes). Parse with `Text.digits`
+  into `U32` in anything a law will touch; keep clocks in `U32` ms.
+- `IO.random_u32` runs on the runtime's worker pool (`io_work` in
+  `effs/random_u32.c`), so each draw costs like a system call and four
+  per request cost 20% of throughput; `IO.now` is inline. Draw once per
+  request id; draw four times only for a session token (016).
+- The server's per-request log line (014): dropped for app responses,
+  kept for refusals; `Air.log` is the app's line. `IO.now()` is
+  milliseconds since process start (`now.c`), so log timestamps are
+  uptime until Bend gains a wall clock.
+- A `match` with string-literal cases (seen in 012): thirteen `case "html":`
+  arms in one def made `bend examples/dashboard/main.bend` take 41 s to
+  start listening instead of 7 s. Use a `Map` built with `Map.set` for
+  lookup tables; keep literal string patterns to one or two arms.
+- Response bytes are expensive (seen in 013): 230 more bytes per response
+  cost 16% of GET throughput on the hello bench even in the body, and the
+  head renderer was quadratic in header bytes until 013 fixed it. The
+  runtime's string-to-socket path is the next thing to measure (Tier 6
+  benchmark work); until then a small response with a full shield is a
+  visible cost, and an app that cares can pass a shorter shield.
+- WebSocket upgrade (Tier 5): `TCP.recv` decodes the socket as UTF-8 text
+  and there is no bytes receive (`bend base TCP` lists `recv`, `poll`,
+  `send` only), while every client-to-server WebSocket frame is masked
+  binary. The frames would arrive corrupted. Revisit when the runtime gains
+  a `TCP.recv_bytes`; SSE (plan 008) covers server push until then.
+- App-chosen shared state passed to the server (Tier 5, plan 015): a
+  template argument must be closed, so `serve(~app(state))` with a runtime
+  `state` is refused ("not comptime: pass it at run time"), and a server
+  generic over a state type is refused too (a type binder cannot precede a
+  `~` parameter). The store is therefore one concrete framework type
+  (`Chan(Map<&2, Map<&2, String>>)`) carried on the request.
+- Signed or encrypted cookies for sessions (plan 016): no SHA or HMAC in
+  Bend 2.0.10 and FNV-1a is not a MAC. Sessions are server-side only.
+- Response-schema validation (plan 017): a re-parse of every response on the
+  hot path for a guarantee that a law gives for free.
+- Sliding-window or token-bucket rate limiting (plan 015): a fixed window
+  bounds memory without a sweep and gives the same headers; revisit if the
+  burst at window edges matters to an app.
+- Template cache (plan 018): no globals, and the store holds strings; a
+  per-request `Disk.read` is fast enough for now.
 

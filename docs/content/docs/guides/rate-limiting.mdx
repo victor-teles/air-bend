@@ -1,0 +1,18 @@
+---
+title: Rate limiting
+description: At most n requests per key per window.
+---
+
+`Air.rate(n, window_ms, key)` is a middleware: at most `n` requests per
+key per window. Over the limit the request fails with 429, `retry-after`
+and the reason; every response carries `x-ratelimit-limit`,
+`x-ratelimit-remaining` and `x-ratelimit-reset`. The window is fixed and
+the counts start over each window, so memory is bounded by the keys seen
+in one. `Air.Rate.by_ip(trust)` keys on the address a trusted proxy
+reports; without one there is no client address (`TCP.accept` gives
+none), so every request shares one bucket. `Air.Rate.by_header("x-api-key")`
+keys on a header; a def of the app's can key on anything.
+
+```python
+Air.Route.get("/search", Air.rate(60, 60000, Air.Rate.by_ip(Air.Trust.proxy()))(search))
+```

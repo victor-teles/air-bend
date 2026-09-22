@@ -1,0 +1,20 @@
+---
+title: CORS and security headers
+description: Answer preflights and add defensive headers.
+---
+
+Two middleware ship with Air. `Air.cors(cfg)` answers preflights and
+adds `Access-Control-Allow-Origin` to responses for the origins the
+policy lists; `Air.Cors.any()` allows every origin and
+`Air.Cors.new(["https://app.example.com"])` an exact list. A request from
+any other origin passes through untouched and the browser refuses it.
+`Air.shield(hs)` adds defensive headers a handler has not set itself:
+`Air.Shield.default()` covers `nosniff`, framing, referrer and
+cross-origin isolation; HSTS and CSP are opt-in with `with_hsts` and
+`with_csp`, since Air runs behind a TLS proxy.
+
+```python
+Air.use([Air.request_id, Air.log, Air.shield(Air.Shield.default()), Air.cors(Air.Cors.any()), Air.on_error(render)], base)
+```
+
+All go outside `on_error`, so an error response carries them too.

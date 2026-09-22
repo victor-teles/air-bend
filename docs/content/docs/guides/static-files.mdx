@@ -1,0 +1,19 @@
+---
+title: Static files
+description: Serve files from a directory under a wildcard route.
+---
+
+`Air.static(dir)` is a handler for a wildcard route whose param is
+`path`:
+
+```python
+Air.Route.get("/assets/*path", Air.static("public"))
+```
+
+It serves the file under `dir` with a mime from the extension, an ETag,
+304 and byte ranges. A request cannot leave `dir`: a segment holding a
+slash of either kind (from `%2F` or `%5C`), a `.` or `..`, or a dotfile
+is a 404, the same as a missing file. A path ending in `/` serves its
+`index.html`. There is no directory listing, and a symlink inside `dir`
+is followed wherever it points. Files are read as UTF-8 text, so this is
+for HTML, CSS, JavaScript and SVG, not images.

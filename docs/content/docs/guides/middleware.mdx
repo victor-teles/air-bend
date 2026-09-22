@@ -1,0 +1,26 @@
+---
+title: Middleware
+description: Run code before and after a handler, or answer without calling it.
+---
+
+A middleware is a def with the next handler first. It runs code before
+and after `next`, or answers without calling it, which ends the chain.
+
+```python
+def timing(next: Air.Handler(), req: Air.Request()) -> IO(Air.Response()):
+  +req = req
+  do IO<Air.Response()>:
+    before : Nat <- IO.now()
+    res : Air.Response() <- next(req)
+    ...log the elapsed time, return res...
+
+def auth(+token: String, next: Air.Handler(), req: Air.Request()) -> IO(Air.Response()):
+  ...call next(Air.Request.with_local(req, "user", name)) or answer 401...
+```
+
+`Air.use([timing], base)` wraps the whole app, the first in the list
+outermost. `Air.Route.wrap(~auth("secret"), admin())` wraps a group; the
+middleware there is a template argument, so it must be a def or a def
+applied to constants. A single route takes `auth("secret")(handler)`.
+Middleware leaves values for handlers with `Air.Request.with_local`, read
+with `Air.Request.local`. See `examples/hello/main.bend`.

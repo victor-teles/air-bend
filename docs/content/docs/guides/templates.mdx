@@ -1,0 +1,28 @@
+---
+title: Templates
+description: Render Mustache-style templates against a JSON context.
+---
+
+`Air.Response.view(template, ctx)` renders a Mustache-style template
+against a JSON context and answers it as HTML:
+
+```python
+def page(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.view(
+    "<h1>Hello, {{name}}</h1><ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>{{^items}}<p>Nothing yet.</p>{{/items}}",
+    Air.Json.obj([Air.Json.field("name", Air.Json.of_str(Air.Request.param(req, "name"))), ...])))
+```
+
+| Tag | Renders |
+|---|---|
+| `{{name}}` | the value, HTML-escaped |
+| `{{{name}}}` | the value, raw |
+| `{{#name}}…{{/name}}` | once per array item, once for another truthy value, else nothing |
+| `{{^name}}…{{/name}}` | once when the value is falsy or an empty array |
+| `{{.}}` | the current item |
+| `{{! note }}` | nothing |
+
+Names may be dotted, and a block over a list still sees the outer
+fields. A missing name prints as "". Malformed templates still render.
+There are no partials and no cache: read a template with
+`Air.Disk.read` per request, or hold it in a def.

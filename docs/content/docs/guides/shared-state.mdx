@@ -1,0 +1,21 @@
+---
+title: Shared state
+description: The server's store, reached through the request.
+---
+
+Bend has no globals, and the app is a template argument that must be a
+closed term, so state cannot be threaded in from `main`. Instead every
+request carries the server's store: namespaces of string maps behind a
+lock, reached through the request.
+
+```python
+def visits(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(U32, Air.Response(), Air.Store.incr(req, "app", "visits"), n => ...)
+```
+
+`Air.Store.get`, `set`, `incr`, `read`, `drop`, and `update`, which
+replaces a namespace with a pure function of it and answers the result.
+Taking the value out is the lock, so keep that function quick: every
+other request waits on it. `Air.serve_shared` takes a store made with
+`Air.Store.new`, for a task outside the server that shares it. The
+framework uses the namespaces `rate`, `sessions` and `session_tally`.

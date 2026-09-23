@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="docs/public/banner.png" alt="Air Bend" width="100%">
+</p>
+
 # Air
 
-A web framework for [Bend](https://bend-lang.com). 
+A web framework for [Bend](https://bend-lang.com).
 
 ```python
 import Base

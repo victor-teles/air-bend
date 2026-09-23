@@ -2,12 +2,8 @@
 @import 'fumadocs-ui/css/neutral.css';
 @import 'fumadocs-ui/css/preset.css';
 
-/* Air Bend: sky blue into lavender over pale cloud, taken from the banner. */
+/* Air Bend: sky blue and lavender over pale cloud, taken from the banner. */
 @theme {
-  --color-air-sky: hsl(206, 82%, 56%);
-  --color-air-violet: hsl(264, 62%, 66%);
-  --color-air-mist: hsl(190, 70%, 80%);
-
   --color-fd-background: hsl(210, 60%, 98.5%);
   --color-fd-foreground: hsl(225, 35%, 14%);
   --color-fd-muted: hsl(212, 70%, 95.5%);
@@ -50,30 +46,6 @@
   --color-fd-muted: hsl(230, 30%, 14%);
   --color-fd-secondary: hsl(230, 30%, 16%);
   --color-fd-muted-foreground: hsl(222, 22%, 72%);
-}
-
-/* A faint sky wash at the top of every page, like the banner's horizon. */
-body {
-  background-image:
-    radial-gradient(60rem 22rem at 15% -6rem, hsla(206, 82%, 70%, 0.18), transparent),
-    radial-gradient(50rem 20rem at 90% -6rem, hsla(264, 62%, 75%, 0.16), transparent);
-  background-repeat: no-repeat;
-}
-
-.dark body {
-  background-image:
-    radial-gradient(60rem 22rem at 15% -6rem, hsla(206, 90%, 55%, 0.16), transparent),
-    radial-gradient(50rem 20rem at 90% -6rem, hsla(264, 70%, 60%, 0.14), transparent);
-}
-
-@utility text-air-gradient {
-  background-image: linear-gradient(90deg, var(--color-air-sky), var(--color-air-violet));
-  background-clip: text;
-  color: transparent;
-}
-
-@utility bg-air-gradient {
-  background-image: linear-gradient(90deg, var(--color-air-sky), var(--color-air-violet));
 }
 
 html {

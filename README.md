@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/public/banner.png" alt="Air Bend" width="100%">
+  <img src="docs/public/banner.png" alt="Air Bend" width="640">
 </p>
 
 # Air

@@ -11,17 +11,17 @@ export default function HomePage() {
         alt="Air Bend"
         priority
         placeholder="blur"
-        sizes="(min-width: 1024px) 960px, 100vw"
-        className="w-full max-w-5xl rounded-2xl border shadow-xl shadow-air-sky/10"
+        sizes="(min-width: 768px) 672px, 100vw"
+        className="w-full max-w-2xl rounded-xl border"
       />
-      <p className="text-fd-muted-foreground text-lg max-w-xl mt-10 mb-8 text-pretty">
+      <p className="text-fd-muted-foreground text-lg max-w-xl mt-8 mb-8 text-pretty">
         A web framework for Bend: routing, middleware, sessions, validation, templates and
         static files, over HTTP/1.1.
       </p>
       <div className="flex gap-3">
         <Link
           href="/docs"
-          className="rounded-full bg-air-gradient px-5 py-2 text-sm font-medium text-white shadow-md shadow-air-violet/20 transition-opacity hover:opacity-90"
+          className="rounded-full bg-fd-primary px-5 py-2 text-sm font-medium text-fd-primary-foreground transition-opacity hover:opacity-90"
         >
           Get started
         </Link>

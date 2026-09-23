@@ -12,7 +12,7 @@ export default function HomePage() {
         priority
         placeholder="blur"
         sizes="(min-width: 768px) 672px, 100vw"
-        className="w-full max-w-2xl rounded-xl border"
+        className="w-full max-w-2xl"
       />
       <p className="text-fd-muted-foreground text-lg max-w-xl mt-8 mb-8 text-pretty">
         A web framework for Bend: routing, middleware, sessions, validation, templates and

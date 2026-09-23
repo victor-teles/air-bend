@@ -14,6 +14,7 @@ A web framework written in Bend 2 (`bend --version` → 2.0.10). Layout:
   - `air/lib/json.bend`, `form.bend`, `negotiate.bend`, `disk.bend`, `static.bend`,
     `errors.bend`, `log.bend`, `random.bend`, `store.bend`, `rate.bend`,
     `session.bend`, `cors.bend`, `shield.bend`: the batteries.
+  - `air/lib/test.bend`: running an app on raw HTTP text without a socket (`Test`).
   New features go in a new or existing `air/lib/` module; `air.bend` only
   gains a wrapper when the name is meant for apps. The modules sit one
   level down on purpose: the C backend names a def by its path with every
@@ -21,7 +22,9 @@ A web framework written in Bend 2 (`bend --version` → 2.0.10). Layout:
   `air/json.parse` (a module) would be the same C symbol and the native
   build would fail with "two names mangle to"; `air/lib/json.parse` cannot
   collide with anything in the facade.
-- `examples/`: one folder per demo app, each with a `main.bend` and a README.
+- `examples/`: one folder per demo app. The app (routes, handlers,
+  middleware) is in `app.bend`, and `main.bend` serves it, so tests can
+  import the app without a second `main`. Each folder has a README.
   - `examples/hello/`: the four-route starter. Run with `bend examples/hello/main.bend`.
   - `examples/dashboard/`: an HTML page with JavaScript and Tailwind served
     from `public/`, plus JSON routes. Run with `bend examples/dashboard/main.bend`.
@@ -30,6 +33,10 @@ A web framework written in Bend 2 (`bend --version` → 2.0.10). Layout:
   new feature there, not in the README. Check with `pnpm build` inside `docs/`.
 - `LAWS.bend`: claims about the framework, written by the human.
 - `PROOF.bend`: their proofs. `bend PROOF.bend` is the gate; run it before committing.
+- `tests/`: programs that run the example apps in-process with
+  `Air.Test` (`air/lib/test.bend`). `bend tests/hello.bend` and
+  `bend tests/dashboard.bend` from the repo root. Each exits 1 on a
+  failed check; run them before committing too.
 
 When using Bend:
 - run `bend guide` to learn it, and `bend base <Name>` to read a Base def

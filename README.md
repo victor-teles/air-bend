@@ -39,9 +39,11 @@ cd docs && pnpm install && pnpm dev
 Then open http://localhost:3000/docs. Pages are MDX under
 `docs/content/docs/`: middleware, request ids and logging, shared state,
 sessions, rate limiting, validation, templates, static files, CORS and
-security headers, errors, and what Air does not do yet.
+security headers, errors, testing, and what Air does not do yet.
 
 ## Checks
 
 `bend PROOF.bend` proves the laws in `LAWS.bend`. It must print
-"All terms check." before a commit.
+"All terms check." before a commit. `bend tests/hello.bend` and
+`bend tests/dashboard.bend` run the examples in-process and exit 1 on a
+failed check.

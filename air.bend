@@ -16,6 +16,7 @@ import ./air/lib/shield.bend as Shield
 import ./air/lib/router.bend as Router
 import ./air/lib/drain.bend as Drain
 import ./air/lib/server.bend as Server
+import ./air/lib/test.bend as Test
 
 # Air
 # ===
@@ -74,6 +75,7 @@ import ./air/lib/server.bend as Server
 #   race.bend     deadlines: an effect raced against a watchdog
 #   drain.bend    the stop switch and the tally of requests in flight
 #   server.bend   the HTTP/1.1 connection loop over TCP
+#   test.bend     running an app on a request without a socket
 #
 # One level down so that a module's C name (`air/lib/json.parse`) can
 # never be the facade's (`air.Json.parse`): the backend would refuse the
@@ -1228,3 +1230,63 @@ def serve_shared(~app: Stoppable(), +limits: Limits(), +timeouts: Timeouts(), +s
 # Ends the process with `code`, whatever computations are still parked.
 def exit(code: U32) -> IO(Unit):
   IO.die(Unit, code, "")
+
+# Testing
+# -------
+#
+# Runs an app in-process, without a socket. `inject` takes raw HTTP text,
+# reads it as the server would (a refused head gives the refusal the
+# server would send), runs the app with a fresh store and settles the
+# response as the server does before writing. Timeouts, keep-alive and
+# 100-continue are not simulated. A test is a program:
+#
+#   import ../examples/hello/app.bend as Hello
+#
+#   def main() -> IO(Unit):
+#     do IO<Unit>:
+#       res : Air.Response() <- Air.Test.inject(Hello.app, Air.Test.get("/hello/ada"))
+#       a : Bool <- Air.Test.expect("greets", Air.Response.body(res), "Olá, ada!")
+#       b : Bool <- Air.Test.expect_u32("200", Air.Response.status(res), 200)
+#       Air.Test.finish([a, b])
+#
+# `finish` ends the process with code 1 when a check failed.
+
+# A GET for `target` ("/path?query") with a `host` header.
+def Test.get(target: String) -> String:
+  Test.get(target)
+
+# A POST of `body` with its content type and length.
+def Test.post(target: String, content_type: String, body: String) -> String:
+  Test.post(target, content_type, body)
+
+# `raw` with one more header line.
+def Test.with_header(name: String, value: String, raw: String) -> String:
+  Test.with_header(name, value, raw)
+
+# Runs `app` on `raw` with a fresh store.
+def Test.inject(app: Handler(), raw: String) -> IO(Response()):
+  Test.inject(app, raw)
+
+# Runs `app` on `raw` with `store`, which carries state across requests.
+def Test.inject_shared(app: Handler(), store: Store(), raw: String) -> IO(Response()):
+  Test.inject_shared(app, store, raw)
+
+# The body as a client reads it; a stream is read until it closes.
+def Test.body(res: Response()) -> IO(String):
+  Test.body(res)
+
+# Prints `ok - name` or `not ok - name: want … got …`; answers whether
+# it passed.
+def Test.expect(name: String, got: String, want: String) -> IO(Bool):
+  Test.expect(name, got, want)
+
+def Test.expect_u32(name: String, got: U32, want: U32) -> IO(Bool):
+  Test.expect_u32(name, got, want)
+
+# A condition, with a note printed when it fails.
+def Test.expect_true(name: String, ok: Bool, note: String) -> IO(Bool):
+  Test.expect_true(name, ok, note)
+
+# Prints the tally; exits 1 when any check failed.
+def Test.finish(results: List<&2, Bool>) -> IO(Unit):
+  Test.finish(results)

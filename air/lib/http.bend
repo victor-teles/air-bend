@@ -1079,6 +1079,12 @@ def Response.empty(status: U32) -> Response:
 def Response.text(body: String) -> Response:
   Response.with_header(Response.new(200, body), "content-type", "text/plain; charset=utf-8")
 
+# What the server sends for a request the app never saw: a bad head, a
+# limit, the 503 of a timeout or a stopping server. The reason phrase
+# as plain text.
+def Response.refusal(+status: U32) -> Response:
+  Response.with_status(Response.text(Status.reason(status)), status)
+
 def Response.html(body: String) -> Response:
   Response.with_header(Response.new(200, body), "content-type", "text/html; charset=utf-8")
 

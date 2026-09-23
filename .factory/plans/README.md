@@ -31,6 +31,16 @@ before any commit, and update your row when done.
 | 017  | Schema values; validate body, query, params | P2 | M | — | DONE (2026-09-22; 14 laws; live on the native dashboard: valid POST 201; `{"title":5,"extra":1}` 422 with three errors in document order; `nope` and a text/plain body 400 via `on_error`; `?limit=abc` 422, `?limit=2` two tasks, none all seven; 422 keeps shield and request-id headers. The checker walks a work list with fuel, since Bend forbids mutual recursion; `optional` is an `SOpt` wrapper so one recursive type suffices) |
 | 018  | Mustache-style HTML templates over a JSON context | P2 | M | — | DONE (2026-09-22; 15 laws; live on native hello: `/page/Ada%20%3Cx%3E` escaped heading and three items, `/empty` the empty state; a 10,000-item section rendered natively to 128,890 bytes without a stack overflow. The checker's termination rule, that the first changed argument must shrink, forced `find_frame` and `walk` to take the list first) |
 
+| 019  | Test injection: run an app on raw HTTP text without a socket; `tests/` | P1 | M | — | DONE (2026-09-22; 11 laws, incl. `refusal_unchanged` proving the server's refusal bytes did not move; `tests/hello.bend` 15/15 and `tests/dashboard.bend` 7/7, a flipped expectation prints `not ok` and exits 1; both examples split into `app.bend` + `main.bend` as a pure move, native-build, and serve (checked on port 18080 because 8080 was taken locally); docs build passes with the new Testing page. Cost note for 020: under `bend tests/hello.bend` the JS runner takes ~25 s to start the hello app, while a native test binary (`bend tests/hello.bend -o t && ./t`) runs in 5.5 s, most of it the SSE check's sleeps) |
+| 020  | CI: proof, tests, native builds, docs build, A/B bench gate vs `main` | P2 | M | 019 | DONE locally, **workflow unverified on GitHub: not authorized to push** (2026-09-23; `.github/workflows/ci.yml` + `.github/actions/setup-bend` pin Bend 2.0.19 by sha256 from GitHub releases (the installer only carries the latest version's hashes) and install clang-19, which `bend -o` needs; `bench/build.sh` swaps hello's port in a copy of `main.bend`, so any checkout builds on a free port (8080 was taken locally); `bench/ab.sh` alternates base/head, default 5 rounds after 3 rounds once strayed 13% on the same binary; `bench/compare.mjs` fails under 0.85: same binary 0.986-1.019 at 5 rounds, a 4 KB-header hello 0.141/0.345 → exit 1, exit 0 with `BENCH_ACCEPTED=true`, this branch vs `main` 0.921/1.093. Rehearsed on Ubuntu 24.04 in Docker: x64 under emulation verified the pinned download and clang 19.1.1 but Bend (a Bun binary) needs AVX the emulator lacks; linux-arm64 Bend 2.0.19 ran the proof (29 s), native example builds and both native test suites (15/15, 7/7). The rehearsal caught `bend -o` not creating `bench/out/`, fixed in the `native` job. Not run: the jobs on GitHub's x64 runners, the runner's same-binary noise, the `docs` job outside this machine) |
+| 021  | Config from env and `.env`; `Limits`/`Timeouts.from_env`; `serve_env` | P2 | S | — | TODO |
+| 022  | Lifecycle hooks as named middleware; plugins documented as route groups | P2 | S | — | TODO |
+| 023  | `/healthz` and `/readyz`; draining flag and pre-stop delay; app checks | P2 | S | — | TODO |
+| 024  | Route notes; `Air.Api.*` validate-and-document; OpenAPI 3.1 document | P2 | L | 017 | TODO |
+| 025  | Prometheus metrics by method, route pattern, status; latency histogram | P2 | M | 024 | TODO |
+| 026  | W3C trace context, span exporter hook, wall-clock effect | P3 | M | 025 | TODO |
+| 027  | Streaming backpressure measured under a slow client; `Stream.with_room` | P3 | S | — | TODO |
+
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
 ## Dependency notes
@@ -56,6 +66,17 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   change, before or after 012/017/018 but not interleaved with them. 016
   needs 014's random ids. 012, 014, 017 and 018 are independent of each
   other. Suggested order: 013, 012, 014, 015, 016, 017, 018.
+
+- Tier 6 (planned 2026-09-22 at `cea6656`): 019 first. Its test
+  programs are the evidence format for every later plan and what 020's
+  CI runs. 020 right after, so the bench gate guards 024 and 025 (both
+  touch the hot path). 021, 022, 023 and 027 are independent of each
+  other. 024 before 025: both change `router.bend` (024 the `Route`
+  constructor, 025 the pick and `run`); do not interleave them. 026
+  needs 025's `Air.Response.route` for span names. Several plans touch
+  `server.bend` in small places (019 `refuse.go`, 021 none, 023 the
+  stopper), so rebase rather than merge in parallel. Suggested order:
+  019, 020, 021, 022, 023, 024, 025, 026, 027.
 
 ## Roadmap Tier 2 coverage
 
@@ -121,6 +142,21 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 | Schema validation hooks (params/query/body/response) | 017 (body, query, params; response validation rejected) |
 | Template/view rendering | 018 (`Air.View.render`, `Air.Response.view`; Mustache subset over `Json`) |
 | WebSocket upgrade handling | rejected, see below |
+
+## Roadmap Tier 6 coverage
+
+| Roadmap item | Plan |
+|---|---|
+| Type inference from route definitions (TS) | rejected, see below; 024's OpenAPI document is the exportable contract |
+| Plugin/extension system with encapsulation rules | 022 (plugins are route groups: `wrap` and `mount` scope them; guide) |
+| Testing helper: inject a request without a socket | 019 |
+| OpenAPI generation from route schemas | 024 |
+| Lifecycle hooks (onRequest, preHandler, onSend, onResponse, onError) | 022 (`on_request`, `on_send`, `on_response`, `on_fail`; after-write rejected) |
+| Config + env handling | 021 |
+| Metrics + OpenTelemetry tracing hooks | 025 (metrics), 026 (trace context and exporter hook; OTLP export deferred) |
+| Health/readiness endpoints | 023 |
+| Benchmark suite in CI | 020 |
+| Backpressure on streaming responses | 027 (already present by construction; measured and made configurable) |
 
 ## Findings considered and rejected
 
@@ -224,4 +260,31 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   burst at window edges matters to an app.
 - Template cache (plan 018): no globals, and the store holds strings; a
   per-request `Disk.read` is fast enough for now.
-
+- Type inference from route definitions (Tier 6): the roadmap line is
+  TypeScript's (inferring `params`/`body` types from a path string).
+  Bend already type-checks every handler, middleware and response
+  statically. What it cannot do is derive a record type from a pattern
+  string or a `Schema` value, so `Request.param(req, "id")` stays a
+  `String` lookup. 024's OpenAPI document gives clients generated types
+  instead. Revisit if Bend gains type-level string computation.
+- After-write `onResponse` (plan 022): the server owns the socket and has
+  no callback registry (the Tier 4 decision above), so `on_response` runs
+  after the app and before the write. A write failure is invisible to
+  app code.
+- Plugin registry and `decorate` (plan 022): a plugin is a def returning
+  `List<Route>`, and locals and store namespaces replace decorators. An
+  open `Request` record would be needed for real decoration.
+- OTLP export over the network (plan 026): needs an HTTP client over
+  `TCP.connect`, batching and retries, plus a spawned exporter task so
+  requests never wait. Spans ship as JSON lines, which a collector can
+  tail.
+- In-flight requests gauge (plan 025): the drain tally lives in the
+  server's context, not on the request. Revisit with more server state
+  in the store (023 starts that with `air`/`draining`).
+- Route label for metrics via a router local or `Route.wrap` (plan 025):
+  a local is invisible outside dispatch, and a wrap misses 404/405. The
+  router annotates the response with an internal `air-route` header that
+  `settle` strips instead.
+- A seventh `Timeouts` field for the pre-stop delay (plan 023): it would
+  break `Air.Timeouts.new`'s six arguments. The delay is a store key
+  (`air`/`drain_delay`) set by `Air.Ready.delay`.

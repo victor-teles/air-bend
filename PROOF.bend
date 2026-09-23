@@ -931,3 +931,36 @@ def Laws.view_unclosed_section():
 
 def Laws.view_false_skips():
   {==}
+
+def Laws.test_get_raw():
+  {==}
+
+def Laws.test_post_length():
+  {==}
+
+def Laws.test_with_header():
+  {==}
+
+def Laws.refusal_render():
+  {==}
+
+def Laws.refusal_unchanged():
+  {==}
+
+def Laws.test_takes_body_by_length():
+  {==}
+
+def Laws.test_refuses_long_head():
+  {==}
+
+def Laws.test_refuses_long_body():
+  {==}
+
+def Laws.test_refuses_short_body():
+  {==}
+
+def Laws.test_refuses_unended_head():
+  {==}
+
+def Laws.test_refuses_parse():
+  {==}

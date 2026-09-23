@@ -16,6 +16,45 @@ accepts, not that a request failed once accepted.
 Bend's runtime listens with a backlog of 16 (`effs/tcp_listen.c`), which is
 what caps Air at high connection counts.
 
+## CI: head against base
+
+`.github/workflows/ci.yml` benchmarks every pull request against its base
+branch on the same runner. A stored baseline would flake: shared runners
+differ by more than the regressions worth catching.
+
+```
+bench/build.sh <repo-dir> <out-binary> [port]   # hello, natively, on a free port
+bench/ab.sh <base-bin> <head-bin>               # alternate them, write bench/out/ab.jsonl
+node bench/compare.mjs [bench/out/ab.jsonl]     # median head/base per route; exit 1 under 0.85
+```
+
+`build.sh` swaps hello's port 8080 (default 18080; `BENCH_PORT` in
+`ab.sh` must match) in a copy of `main.bend` next to the original, so it
+works on any checkout, `main` included. `ab.sh` runs base, then head, for
+each of `ROUNDS` (5) rounds of `SECS` (5) seconds at `CONNS` (32) on
+`GET /hello/world` and a 1 KB `POST /echo`, one server at a time.
+`compare.mjs` takes the median of each side, prints a Markdown table
+with the spread of each side, and appends it to `$GITHUB_STEP_SUMMARY`
+in CI. `THRESHOLD` overrides 0.85. With `BENCH_ACCEPTED=true` (the
+`bench-accepted` label on the pull request) it reports without failing:
+for a change whose cost is the point, like the shield's headers.
+
+Noise, measured 2026-09-23 on a busy Apple Silicon laptop (load
+average 4-5), the same binary on both sides:
+
+| rounds | GET head/base | POST head/base |
+| -----: | ------------: | -------------: |
+| 3      | 1.009, 1.132, 1.015 | 1.021, 1.030, 0.947 |
+| 5      | 0.986, 1.003  | 1.019, 0.996   |
+
+Three rounds strayed by 13% once, too close to a 15% gate, so the
+default is five. A hello that adds a 4 KB header to every response
+measured 0.141 (GET) and 0.345 (POST) and failed the gate, as it
+should. This branch against `main` measured 0.921 and 1.093 at three
+rounds, within the noise. The runner's own noise has not been measured
+yet; if a same-binary run there strays past 15%, raise `ROUNDS` before
+the threshold.
+
 ## 2026-09-21 (after Tier 5 store, rate limiting and sessions), Apple Silicon, 32 connections, 5s
 
 The store field on every request costs nothing measurable. `session`

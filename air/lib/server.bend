@@ -447,7 +447,7 @@ def refuse.go(+ctx: Ctx, sock: Socket, method: String, path: String, +status: U3
     case False{}:
       do IO<Next>:
         log(method, path, status)
-        send(ctx, sock, SNil{}, False{}, False{}, Http.Response.with_status(Http.Response.text(Http.Status.reason(status)), status))
+        send(ctx, sock, SNil{}, False{}, False{}, Http.Response.refusal(status))
 
 def refuse(+ctx: Ctx, sock: Socket, method: String, path: String, +status: U32) -> IO(Next):
   refuse.go(ctx, sock, method, path, status, U32.is_eq(status, 0))

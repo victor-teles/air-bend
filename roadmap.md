@@ -73,11 +73,11 @@ Tier 5 — Batteries
 Tier 6 — DX & ops
 Type inference from route definitions (params, body, response) if you're in TS — this is the main reason people pick a new framework in 2026
 Plugin/extension system with encapsulation rules
-Testing helper: inject a request without opening a socket
+- [x] Testing helper: inject a request without opening a socket — `Air.Test.inject(app, raw)` (`air/lib/test.bend`): raw HTTP text read as the server reads it (refusals included), a fresh or shared store, the response settled as the server settles it, streams drained by `Air.Test.body`; `expect`/`finish` print `ok`/`not ok` and exit 1 on failure; `tests/hello.bend` and `tests/dashboard.bend`; timeouts and keep-alive not simulated
 OpenAPI generation from route schemas
 Lifecycle hooks (onRequest, preHandler, onSend, onResponse, onError)
 Config + env handling
 Metrics + OpenTelemetry tracing hooks
 Health/readiness endpoints
-Benchmark suite in CI so you catch regressions
+- [x] Benchmark suite in CI so you catch regressions — `.github/workflows/ci.yml`: proof, native-built tests, native example builds, docs build, and on pull requests an A/B of hello built from base and head, alternated for five rounds on one runner (`bench/build.sh`, `bench/ab.sh`, `bench/compare.mjs`); fails under 85% of base on GET or POST unless labelled `bench-accepted`; Bend pinned by version and sha256 with clang 19
 Backpressure handling on streaming responses

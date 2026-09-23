@@ -21,6 +21,7 @@ import ./air/lib/router.bend as Router
 import ./air/lib/race.bend as Race
 import ./air/lib/drain.bend as Drain
 import ./air/lib/server.bend as Server
+import ./air/lib/test.bend as Test
 
 # Routing
 # -------
@@ -1224,3 +1225,49 @@ law view_unclosed_section:
 
 law view_false_skips:
   {View.render("[{{#a}}x{{/a}}]", one("a", Json.of_bool(False{}))) == "[]" : String}
+
+# Testing
+# -------
+
+law test_get_raw:
+  {Test.get("/a?b=1") == "GET /a?b=1 HTTP/1.1\r\nhost: test\r\n\r\n" : String}
+
+# The length is in bytes: "é" is two.
+law test_post_length:
+  {Test.post("/e", "text/plain", "héllo")
+    == "POST /e HTTP/1.1\r\nhost: test\r\ncontent-type: text/plain\r\ncontent-length: 6\r\n\r\nhéllo" : String}
+
+law test_with_header:
+  {Test.with_header("x-a", "1", Test.get("/"))
+    == "GET / HTTP/1.1\r\nhost: test\r\nx-a: 1\r\n\r\n" : String}
+
+# The refusal the server sends is the one tests get, byte for byte.
+law refusal_render:
+  {Http.Response.render(Http.Response.refusal(431), False{}, False{})
+    == "HTTP/1.1 431 Request Header Fields Too Large\r\nconnection: close\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 31\r\n\r\nRequest Header Fields Too Large" : String}
+
+# What `refuse` built inline before `refusal` existed.
+law refusal_unchanged:
+  {Http.Response.refusal(503) == Http.Response.with_status(Http.Response.text(Http.Status.reason(503)), 503) : Http.Response}
+
+law test_takes_body_by_length:
+  {Test.Prepared.body(Test.prepare(Http.Limits.default(), "POST / HTTP/1.1\r\ncontent-length: 3\r\n\r\nabcdef"))
+    == "abc" : String}
+
+law test_refuses_long_head:
+  {Test.Prepared.refused(Test.prepare(Http.Limits{16, 100, 8192, 1048576}, "GET /a-long-path HTTP/1.1\r\n\r\n"))
+    == 431 : U32}
+
+law test_refuses_long_body:
+  {Test.Prepared.refused(Test.prepare(Http.Limits{16384, 100, 8192, 2}, "POST / HTTP/1.1\r\ncontent-length: 3\r\n\r\nabc"))
+    == 413 : U32}
+
+law test_refuses_short_body:
+  {Test.Prepared.refused(Test.prepare(Http.Limits.default(), "POST / HTTP/1.1\r\ncontent-length: 9\r\n\r\nabc"))
+    == 400 : U32}
+
+law test_refuses_unended_head:
+  {Test.Prepared.refused(Test.prepare(Http.Limits.default(), "GET / HTTP/1.1\r\n")) == 400 : U32}
+
+law test_refuses_parse:
+  {Test.Prepared.refused(Test.prepare(Http.Limits.default(), "GET / HTTP/2.0\r\n\r\n")) == 505 : U32}

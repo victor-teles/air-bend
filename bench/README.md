@@ -55,6 +55,34 @@ rounds, within the noise. The runner's own noise has not been measured
 yet; if a same-binary run there strays past 15%, raise `ROUNDS` before
 the threshold.
 
+## 2026-09-24 (plan 027, stream backpressure), Apple Silicon, native hello
+
+`/admin/flood` streams 20,000 pieces of 16 KiB (about 320 MB). Each
+piece is new text, because one shared string would hide what the
+window holds. The pieces go to `curl --limit-rate 1M`. RSS was sampled
+every second for 20 s (kB). Idle RSS was about 3.2 MB.
+
+| window | RSS series (kB) | pieces sent in 20 s |
+| ------ | --------------- | ------------------: |
+| 8 (`Stream.new`) | 7952 7952 7952 7760 7696 7680 7680 7680 7680 7680 7264 7264 7264 7264 7264 7264 7264 7264 7264 7264 | 1414 |
+| 64 (`with_room(64)`) | 29456 29456 29456 29456 28784 28784 28784 28784 28784 28784 28784 28784 28784 28784 28784 28784 28784 28688 28720 28720 | 1477 |
+
+Both series are flat. The producer sent about 70 pieces/s, the
+client's 64/s plus what the socket buffers took, instead of all 20,000.
+The 56 extra pieces of window cost about 21.5 MB, about 390 KB per
+16 KiB piece, because a Bend string is a list of characters. With one
+string shared by every piece, both windows sat at about 3 MB.
+
+Releasing the producer:
+
+- The client killed mid-stream: `flood: client gone after 1414` 0.03 s
+  later (1477 with room 64).
+- A client that connects and never reads (`curl -N … | sleep 90`): the
+  buffers took 58 pieces, then the send timeout (30 s) fired
+  (`air: timeout: stream`), and `flood: client gone after 58` came
+  36.5 s after the request. RSS fell over that time, from 7.9 MB to
+  1-2.5 MB.
+
 ## 2026-09-24 (plan 026, tracing), Apple Silicon, 32 connections, 5s, `ab.sh` with 7 rounds
 
 This compares hello's full stack, with `Air.log`'s wall-clock `ts`,

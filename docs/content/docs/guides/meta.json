@@ -15,6 +15,7 @@
     "validation",
     "openapi",
     "templates",
+    "streaming",
     "static-files",
     "cors-and-security-headers",
     "errors",

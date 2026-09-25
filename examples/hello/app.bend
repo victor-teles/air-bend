@@ -255,6 +255,61 @@ def demo(req: Air.Request()) -> IO(Air.Response()):
 def area(req: Air.Request()) -> IO(Air.Response()):
   IO.pure(Air.Response(), Air.Response.text("area " ++ Air.Request.local(req, "area")))
 
+# Backpressure
+# ------------
+#
+# A demo for measuring, not a feature: `/admin/flood` streams 20000
+# pieces of 16 KiB (about 320 MB) as fast as the channel takes them,
+# printing its count every 1000. Against a slow reader the producer
+# waits on the full channel, so memory stays flat:
+# `curl -s --limit-rate 1M -H 'x-token: secret' -o /dev/null localhost:8080/admin/flood`.
+# `?room=64` uses a 64-piece window instead of 8.
+
+# Piece number `n`: 16 KiB of fresh text, as a real producer's data
+# would be (one shared string would hide what the window holds). Built
+# by repeating a 16-character seed, so no append goes deep.
+def flood_piece(+n: U32) -> String:
+  String.repeat(String.repeat(U32.show(U32.add(1000000000, n)) ++ "-flood", 64n), 16n)
+
+def flood_report(+count: U32, +now: Nat, due: Bool) -> IO(Unit):
+  match due:
+    case True{}:
+      IO.print("flood: " ++ U32.show(count) ++ " pieces at " ++ Nat.show(now) ++ " ms")
+    case False{}:
+      IO.pure(Unit, Unit{})
+
+# `sent` pieces went out so far, and `ok` is the last send's answer:
+# False once the client is gone and the server closed the channel.
+def flood_send(+n: Nat, +sent: U32, +chan: Chan(String), ok: Bool) -> IO(Unit):
+  match n ok:
+    case _ False{}:
+      IO.print("flood: client gone after " ++ U32.show(U32.sub(sent, 1)))
+    case 0n True{}:
+      do IO<Unit>:
+        IO.print("flood: done, " ++ U32.show(sent) ++ " pieces")
+        Chan.close(String, chan)
+    case 1n+p True{}:
+      do IO<Unit>:
+        now : Nat <- IO.now()
+        flood_report(sent, now, Bool.and(U32.is_gt(sent, 0), U32.is_eq(U32.mod(sent, 1000), 0)))
+        IO.bind(Bool, Unit, Chan.send(String, chan, flood_piece(sent)), ok => flood_send(p, U32.inc(sent), chan, ok))
+
+def flood.start(chan: Chan(String)) -> IO(Air.Response()):
+  +chan = chan
+  do IO<Air.Response()>:
+    IO.spawn(Unit, flood_send(20000n, 0, chan, True{}))
+    return Air.Response.stream(chan)
+
+def flood_room(wide: Bool) -> IO(Chan(String)):
+  match wide:
+    case True{}:
+      Air.Stream.with_room(64)
+    case False{}:
+      Air.Stream.new()
+
+def flood(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(Chan(String), Air.Response(), flood_room(String.eq(Air.Request.query(req, "room"), "64")), flood.start)
+
 # Metrics
 # -------
 #
@@ -314,7 +369,8 @@ def admin() -> List<Air.Route()>:
     Air.Route.get("/whoami", whoami),
     Air.Route.get("/area", area),
     Air.Route.post("/demo/:state", demo),
-    Air.Route.get("/metrics", Air.Metrics.expose)
+    Air.Route.get("/metrics", Air.Metrics.expose),
+    Air.Route.get("/flood", flood)
   ]
 
 # The admin group is wrapped in `auth` and mounted under "/admin"; the

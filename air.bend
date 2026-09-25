@@ -481,9 +481,17 @@ def Response.sse(chan: Chan(String)) -> Response():
 # ------
 
 # A channel for `Response.stream`: room for eight pieces, so a producer
-# ahead of a slow client waits rather than piling up memory.
+# ahead of a slow client waits rather than piling up memory. The server
+# takes the next piece only once the last is in the kernel's buffer, so
+# a stream holds at most the window plus one piece per connection.
 def Stream.new() -> IO(Chan(String)):
   Chan.new(String, 8)
+
+# A channel with room for `n` pieces (at least 1). A bigger window
+# absorbs a producer's bursts, but holds up to `n` times the piece size
+# per connection, and a producer finds out later that the client left.
+def Stream.with_room(n: U32) -> IO(Chan(String)):
+  Chan.new(String, U32.max(n, 1))
 
 # Sse
 # ---

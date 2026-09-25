@@ -295,6 +295,34 @@ def trace_invalid() -> IO(Bool):
   IO.bind(Air.Response(), Bool, run(traceparent("00-00000000000000000000000000000000-00f067aa0ba902b7-01", Air.Test.get("/trace"))),
     res => trace_invalid.fin(view(res)))
 
+# Streaming
+# ---------
+
+# A producer of `n` one-character pieces; it stops if the reader goes.
+def pieces(+n: Nat, +chan: Chan(String), ok: Bool) -> IO(Unit):
+  match n ok:
+    case _ False{}:
+      IO.pure(Unit, Unit{})
+    case 0n True{}:
+      Chan.close(String, chan)
+    case 1n+p True{}:
+      IO.bind(Bool, Unit, Chan.send(String, chan, "x"), sent => pieces(p, chan, sent))
+
+def narrow.start(chan: Chan(String)) -> IO(Air.Response()):
+  +chan = chan
+  do IO<Air.Response()>:
+    IO.spawn(Unit, pieces(100n, chan, True{}))
+    return Air.Response.stream(chan)
+
+# A window of one piece: the producer waits on every send.
+def narrow(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(Chan(String), Air.Response(), Air.Stream.with_room(1), narrow.start)
+
+def narrow_whole() -> IO(Bool):
+  IO.bind(Air.Response(), Bool, Air.Test.inject(narrow, Air.Test.get("/")),
+    res => IO.bind(String, Bool, Air.Test.body(res),
+      body => Air.Test.expect("a one-piece window loses nothing", body, String.repeat("x", 100n))))
+
 def main() -> IO(Unit):
   do IO<Unit>:
     a : Bool <- greets()
@@ -336,4 +364,5 @@ def main() -> IO(Unit):
     ae : Bool <- trace_continued()
     af : Bool <- trace_fresh()
     ag : Bool <- trace_invalid()
-    Air.Test.finish([a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, t, u, v, w, x, y, z, aa, ab, ac, ad, ae, af, ag])
+    ah : Bool <- narrow_whole()
+    Air.Test.finish([a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, t, u, v, w, x, y, z, aa, ab, ac, ad, ae, af, ag, ah])

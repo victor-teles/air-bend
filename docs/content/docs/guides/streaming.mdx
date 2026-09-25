@@ -1,0 +1,96 @@
+---
+title: Streaming and SSE
+description: Stream a body piece by piece, send Server-Sent Events, and let a slow client slow the producer.
+---
+
+A streamed response is a channel. A producer task sends strings on the
+channel, and the server writes each one to the client as a chunk as it
+arrives. The response ends when the producer closes the channel.
+
+```python
+def tick(+n: Nat, +chan: Chan(String), ok: Bool) -> IO(Unit):
+  match n ok:
+    case _ False{}:
+      IO.print("ticks: client gone")
+    case 0n True{}:
+      Chan.close(String, chan)
+    case 1n+p True{}:
+      do IO<Unit>:
+        sent : Bool <- Chan.send(String, chan, Air.Sse.event("tick", Nat.show(n)))
+        IO.sleep(1000)
+        tick(p, chan, sent)
+
+def ticks.start(chan: Chan(String)) -> IO(Air.Response()):
+  +chan = chan
+  do IO<Air.Response()>:
+    IO.spawn(Unit, tick(5n, chan, True{}))
+    return Air.Response.sse(chan)
+
+def ticks(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(Chan(String), Air.Response(), Air.Stream.new(), ticks.start)
+```
+
+`Air.Response.stream(chan)` sends the pieces as they are.
+`Air.Response.sse(chan)` also sets `content-type: text/event-stream`
+and `cache-control: no-cache`. Send it pieces built with
+`Air.Sse.event(name, data)` or `Air.Sse.data(data)`. A HEAD request gets
+the head only. An HTTP/1.0 client gets the pieces without chunk framing,
+and the connection closes after the last one.
+
+## Backpressure
+
+A producer that is faster than its client slows down to the client's
+speed. It does not pile up memory. Three things make this work:
+
+1. The channel has a fixed window. `Air.Stream.new()` holds 8 pieces.
+   When the channel is full, `Chan.send` waits.
+2. The server takes the next piece only after the previous one is in
+   the kernel's socket buffer. A socket that is not ready to write
+   makes the server wait, not buffer.
+3. When the client goes away, or a piece cannot be written within the
+   send timeout (`AIR_TIMEOUT_SEND`, 30 s by default), the server closes
+   the channel. A producer that is waiting on `Chan.send` is woken with
+   `False`. Stop there, as `tick` does above.
+
+The window is the only buffer the server keeps for a stream. The
+kernel's socket buffers come after it.
+
+## The window
+
+```python
+Air.Stream.with_room(64)    # room for 64 pieces; at least 1
+```
+
+A bigger window lets a bursty producer keep working while the client
+catches up. The trade-offs:
+
+- Memory. The server can hold up to the window's worth of pieces for
+  each connection. A Bend string takes about 24 bytes of memory per
+  character, so a 16 KiB piece uses about 390 KB. With 16 KiB pieces, a
+  window of 8 held about 4 MB above idle, and a window of 64 about 25 MB.
+- Latency. The producer learns later that the client left, because it
+  keeps filling the window until the server closes the channel.
+
+The default of 8 suits most streams.
+
+## Piece size
+
+Air does not split or limit pieces, because a limit would reject valid
+events. Keep each piece small: 64 KiB or less. A 100 MB string sent as
+one piece is held whole in memory while it is written.
+
+## Measured
+
+A hello route streamed 20,000 pieces of 16 KiB each (about 320 MB) as
+fast as the channel took them, to a client reading at 1 MB/s:
+
+| Window | RSS during 20 s | Pieces sent in 20 s |
+| --- | --- | --- |
+| 8 | 7.3–8.0 MB, flat | 1414 |
+| 64 | 28.7–29.5 MB, flat | 1477 |
+
+The producer went at the client's speed, about 70 pieces a second,
+instead of running ahead. When the client was killed, the producer was
+released 0.03 s later. When the client connected and never read, the
+send timeout ended the stream about 36 s after the request started, and
+the producer was released. The full series is in `bench/README.md`.

@@ -28,3 +28,6 @@ bypasses it so clients see the list in prod too. `Air.validate_query`
 and `Air.validate_params` check the query and path params leniently:
 `"42"` is an integer there. There are no range or pattern rules, and
 responses are not validated.
+
+To validate and document a route with the same schema, use
+`Air.Api.body` and `Air.Api.query` instead; see [OpenAPI](/docs/guides/openapi).

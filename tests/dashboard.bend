@@ -57,6 +57,18 @@ def json_404() -> IO(Bool):
   IO.bind(Air.Response(), Bool, run(Air.Test.get("/api/nope")),
     res => Air.Test.expect("an unknown API path is a JSON 404", summary(res), "404 {\"status\":404,\"error\":\"Not Found\"}"))
 
+def documented.fin(+res: Air.Response()) -> IO(Bool):
+  +doc = Air.Response.body(res)
+  Air.Test.expect_true("/openapi.json documents both task routes",
+    Bool.and(U32.is_eq(Air.Response.status(res), 200),
+      Bool.and(String.contains(doc, "\"/api/tasks\":{\"get\""),
+        Bool.and(String.contains(doc, "\"post\":{\"operationId\":\"post_api_tasks\""),
+          String.contains(doc, "\"/api/hello/{name}\"")))),
+    doc)
+
+def documented() -> IO(Bool):
+  IO.bind(Air.Response(), Bool, run(Air.Test.get("/openapi.json")), res => documented.fin(res))
+
 def main() -> IO(Unit):
   do IO<Unit>:
     a : Bool <- creates()
@@ -66,4 +78,5 @@ def main() -> IO(Unit):
     e : Bool <- limit()
     f : Bool <- static()
     g : Bool <- json_404()
-    Air.Test.finish([a, b, c, d, e, f, g])
+    h : Bool <- documented()
+    Air.Test.finish([a, b, c, d, e, f, g, h])

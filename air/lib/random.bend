@@ -40,6 +40,14 @@ def token() -> IO(String):
     d : U32 <- draw()
     return hex_id(a, b) ++ hex_id(c, d)
 
+# Sixteen hex characters from two words, no clock mixed in: a span id
+# in a trace, which the W3C trace context asks to be random.
+def span_id() -> IO(String):
+  do IO<String>:
+    a : U32 <- draw()
+    b : U32 <- draw()
+    return hex_id(a, b)
+
 def safe_char(+c: Char) -> Bool:
   Bool.or(Char.is_alpha(c), Bool.or(Char.is_digit(c),
     Bool.or(Char.is_eq(c, '-'), Bool.or(Char.is_eq(c, '_'), Char.is_eq(c, '.')))))

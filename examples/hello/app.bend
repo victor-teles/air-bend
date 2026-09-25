@@ -138,6 +138,19 @@ def count(req: Air.Request()) -> IO(Air.Response()):
 def logout(req: Air.Request()) -> IO(Air.Response()):
   Air.Session.end(req, Air.Response.text("bye"))
 
+# Config
+# ------
+#
+# `GREETING` from the environment, else from a `.env` file in the
+# working directory, else "Olá": `GREETING=Hi bend examples/hello/main.bend`
+# then `curl localhost:8080/config/greeting`.
+
+def greeting.fin(g: String) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text(g))
+
+def greeting(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(String, Air.Response(), Air.Config.get(req, "GREETING", "Olá"), greeting.fin)
+
 # Templates
 # ---------
 #
@@ -161,6 +174,113 @@ def empty(req: Air.Request()) -> IO(Air.Response()):
     Air.Json.field("items", Air.Json.arr([]))
   ])))
 
+# Hooks
+# -----
+#
+# Lifecycle hooks are middleware that take a function. They wrap the
+# `/hooks` group only, so the rest of the app pays nothing: `record`
+# counts every response of the group by status class, `stamp` adds a
+# header, `report` counts failures before `on_error` renders them.
+# `curl localhost:8080/hooks/ok`, `/hooks/boom`, then `/hooks/stats`.
+
+def status_class(+s: U32) -> String:
+  U32.show(U32.div(s, 100)) ++ "xx"
+
+def counted(n: U32) -> IO(Unit):
+  IO.pure(Unit, Unit{})
+
+# onResponse: after the handler, with its milliseconds.
+def record(req: Air.Request(), res: Air.Response(), ms: Nat) -> IO(Unit):
+  IO.bind(U32, Unit, Air.Store.incr(req, "hook_statuses", status_class(Air.Response.status(res))), counted)
+
+# onSend: the response the client gets.
+def stamp(req: Air.Request(), res: Air.Response()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.with_header(res, "x-hooked", "yes"))
+
+# onError, observing: the failure before it is rendered.
+def report(req: Air.Request(), e: Air.Error()) -> IO(Unit):
+  IO.bind(U32, Unit, Air.Store.incr(req, "hook_failures", U32.show(Air.Error.status(e))), counted)
+
+def hook_ok(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("ok"))
+
+def hook_boom(req: Air.Request()) -> IO(Air.Response()):
+  Air.fail(Air.Error.internal("hooked failure"))
+
+def hook_stats.fin(ok: String, failed: String) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("2xx=" ++ ok ++ " 5xx=" ++ failed))
+
+def hook_stats.go(req: Air.Request(), ok: String) -> IO(Air.Response()):
+  IO.bind(String, Air.Response(), Air.Store.get(req, "hook_failures", "500"), failed => hook_stats.fin(ok, failed))
+
+# Counts so far; this request is not in them yet, since `record` runs
+# after it.
+def hook_stats(req: Air.Request()) -> IO(Air.Response()):
+  +req = req
+  IO.bind(String, Air.Response(), Air.Store.get(req, "hook_statuses", "2xx"), ok => hook_stats.go(req, ok))
+
+def hooked() -> List<Air.Route()>:
+  [
+    Air.Route.get("/ok", hook_ok),
+    Air.Route.get("/boom", hook_boom),
+    Air.Route.get("/stats", hook_stats)
+  ]
+
+# preHandler: runs after routing, inside the admin group, so a handler
+# there can read what it set.
+def mark_admin(req: Air.Request()) -> IO(Air.Request()):
+  IO.pure(Air.Request(), Air.Request.with_local(req, "area", "admin"))
+
+# Health
+# ------
+#
+# `Air.health()` adds `/healthz` and `/readyz`. `/admin/demo/down` marks
+# a `demo` check down, so `/readyz` answers 503 until `/admin/demo/up`.
+
+def demo.fin(+state: String, u: Unit) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("demo " ++ state))
+
+def demo.go(req: Air.Request(), +state: String, up: Bool) -> IO(Air.Response()):
+  match up:
+    case True{}:
+      IO.bind(Unit, Air.Response(), Air.Ready.up_in(req, "demo"), u => demo.fin(state, u))
+    case False{}:
+      IO.bind(Unit, Air.Response(), Air.Ready.down_in(req, "demo"), u => demo.fin(state, u))
+
+def demo(req: Air.Request()) -> IO(Air.Response()):
+  +req = req
+  +state = Air.Request.param(req, "state")
+  demo.go(req, state, String.eq(state, "up"))
+
+def area(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("area " ++ Air.Request.local(req, "area")))
+
+# Metrics
+# -------
+#
+# `Air.metrics` wraps the whole app (see `app.fin`) and counts every
+# request by method, route pattern and status, with a latency
+# histogram. `/admin/metrics` answers them for Prometheus, behind
+# `auth` since it names every route:
+# `curl -H 'x-token: secret' localhost:8080/admin/metrics`.
+
+# Tracing
+# -------
+#
+# `Air.trace` (see `app.fin`) continues a W3C `traceparent` or starts a
+# trace, and prints one span per request as a JSON line. `/trace` shows
+# what a handler sees; `traceparent` is what it would send downstream:
+# `curl -H 'traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' localhost:8080/trace`.
+
+def trace_ids(req: Air.Request()) -> IO(Air.Response()):
+  +req = req
+  IO.pure(Air.Response(), Air.Response.text(String.join([
+    Air.Request.local(req, "traceparent"),
+    Air.Request.local(req, "trace_id"),
+    Air.Request.local(req, "parent_id"),
+    Air.Request.local(req, "span_id")
+  ], "\n")))
+
 # Routes
 # ------
 
@@ -178,7 +298,9 @@ def public() -> List<Air.Route()>:
     Air.Route.get("/visits", visits),
     Air.Route.get("/limited", Air.rate(5, 10000, Air.Rate.by_ip(Air.Trust.none()))(limited)),
     Air.Route.get("/page/:name", page),
-    Air.Route.get("/empty", empty)
+    Air.Route.get("/empty", empty),
+    Air.Route.get("/config/greeting", greeting),
+    Air.Route.get("/trace", trace_ids)
   ]
 
 def with_session() -> List<Air.Route()>:
@@ -188,20 +310,33 @@ def with_session() -> List<Air.Route()>:
   ]
 
 def admin() -> List<Air.Route()>:
-  [Air.Route.get("/whoami", whoami)]
+  [
+    Air.Route.get("/whoami", whoami),
+    Air.Route.get("/area", area),
+    Air.Route.post("/demo/:state", demo),
+    Air.Route.get("/metrics", Air.Metrics.expose)
+  ]
 
 # The admin group is wrapped in `auth` and mounted under "/admin"; the
 # middleware is a template argument, so it is a def applied to a constant.
 def routes() -> List<Air.Route()>:
   Air.Route.all([
+    Air.health(),
     public(),
     Air.Route.wrap(~Air.session(Air.Session.default()), with_session()),
-    Air.Route.mount("/admin", Air.Route.wrap(~auth("secret"), admin()))
+    Air.Route.mount("/admin", Air.Route.wrap(~auth("secret"), Air.Route.wrap(~Air.on_request(mark_admin), admin()))),
+    Air.Route.mount("/hooks",
+      Air.Route.wrap(~Air.on_response(record),
+        Air.Route.wrap(~Air.on_send(stamp),
+          Air.Route.wrap(~Air.on_fail(report), hooked()))))
   ])
 
 def base(req: Air.Request()) -> IO(Air.Response()):
   Air.dispatch(routes(), req)
 
+# `metrics` is outermost, so its timing covers the whole chain. `trace`
+# sits inside `request_id` and outside `log`, so the log line carries
+# the trace id.
 # `request_id` and `log` wrap the whole app; `shield` adds defensive
 # headers and `cors` lets any origin call; then `on_error` renders
 # failures as plain text. The first middleware in the list is the
@@ -210,7 +345,9 @@ def base(req: Air.Request()) -> IO(Air.Response()):
 # the environment is read per request rather than passed in from `main`.
 def app.fin(req: Air.Request(), env: Air.Env()) -> IO(Air.Response()):
   Air.use([
+    Air.metrics,
     Air.request_id,
+    Air.trace(Air.Trace.print),
     Air.log,
     Air.shield(Air.Shield.default()),
     Air.cors(Air.Cors.any()),

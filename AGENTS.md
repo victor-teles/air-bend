@@ -15,6 +15,14 @@ A web framework written in Bend 2 (`bend --version` → 2.0.10). Layout:
     `errors.bend`, `log.bend`, `random.bend`, `store.bend`, `rate.bend`,
     `session.bend`, `cors.bend`, `shield.bend`: the batteries.
   - `air/lib/test.bend`: running an app on raw HTTP text without a socket (`Test`).
+  - `air/lib/config.bend`: settings from the environment and `.env`, and `serve_env` (`Config`).
+  - `air/lib/hooks.bend`: lifecycle hooks as middleware that take a function (`Hooks`).
+  - `air/lib/health.bend`: `/healthz`, `/readyz` and readiness checks (`Health`).
+  - `air/lib/metrics.bend`: Prometheus request counts and latency by route (`Metrics`; the facade imports it as `Metric`).
+  - `air/lib/openapi.bend`: route notes as an OpenAPI 3.1 document (`OpenApi`).
+  - `air/lib/trace.bend`: W3C trace context and a span per request (`Trace`).
+  - `air/lib/clock.bend`: the wall clock, Air's one custom effect, with its
+    host code in `air/lib/effs/wall_ms.c` and `.js` (`Clock`).
   New features go in a new or existing `air/lib/` module; `air.bend` only
   gains a wrapper when the name is meant for apps. The modules sit one
   level down on purpose: the C backend names a def by its path with every
@@ -91,6 +99,11 @@ The checker enforces these; the guide only hints at some of them.
   character as `_`, and refuses two live defs that mangle alike. Keep the
   implementation under `air/lib/` (see the layout above) and native-build
   the examples (`bench/run.sh`) after adding facade names.
+- A custom effect is a def whose body is two imports (`air/lib/clock.bend`,
+  and `~/.bend/guide/EFFECTS.md`). Its C symbols come from the bare def
+  name, not the path (`wall_ms` gives `CID_WALL_MS` and `wall_ms_run`), so
+  give an effect def a name no other effect uses, and rebuild the effect
+  when Bend updates, because the runtime names it uses may change.
 - Self-calls must decrease: arguments are read left to right, each passed
   unchanged until one shrinks. Put the list or fuel being consumed first.
 - `Nat.read` guards overflow against 2^48 built in unary, so a law that

@@ -1,0 +1,80 @@
+---
+title: OpenAPI
+description: Validate a request and document it with one schema, and serve an OpenAPI 3.1 document.
+---
+
+A route can say what it takes and what it answers. `Air.openapi` turns a
+route list into an [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.0)
+document, which client generators, API explorers and contract tests
+read.
+
+```python
+def api() -> List<Air.Route()>:
+  [
+    Air.Api.tag("tasks",
+      Air.Api.summary("List tasks",
+        Air.Api.returns(200, Air.Schema.arr(task()),
+          Air.Api.query(tasks_query(), Air.Route.get("/tasks", tasks))))),
+    Air.Api.tag("tasks",
+      Air.Api.summary("Create a task",
+        Air.Api.returns(201, task(),
+          Air.Api.body(new_task(), Air.Route.post("/tasks", create)))))
+  ]
+
+def routes() -> List<Air.Route()>:
+  Air.Route.all([
+    api(),
+    [Air.Route.get("/openapi.json", Air.openapi("Tasks", "1.0.0", api()))]
+  ])
+```
+
+## One schema, two jobs
+
+`Air.Api.body(schema, route)` wraps the route's handler in
+[`Air.validate_json(schema)`](/docs/guides/validation) and records the
+schema as the request body. `Air.Api.query(schema, route)` does the same
+with `validate_query`, and each property of the object schema becomes a
+query parameter. A schema written once cannot drift from the document.
+
+`Air.Api.returns(status, schema, route)`, `Air.Api.summary(text, route)`
+and `Air.Api.tag(name, route)` only add to the document. Path parameters
+need nothing: every `:name` and `*name` in the pattern is listed as a
+string in the path. A `*name` wildcard also gets a note that it may
+contain `/`, since OpenAPI has no multi-segment parameter.
+
+## What the document holds
+
+- `openapi: 3.1.0`, the title and version you pass, and `servers: [{"url": "/"}]`,
+  so the paths are relative to wherever the document is served.
+- One path item per pattern, with every method registered on it, in
+  route order. Mounting keeps what a route says: `Air.Route.mount("/api", api())`
+  documents `/api/tasks`.
+- Per operation: an `operationId` from the method and path
+  (`post_api_tasks`), the summary, tags, parameters, request body and
+  responses. A route with a body also lists the 400 (not JSON) and the
+  422 (with the shape of the errors list) that validation answers. A
+  route that declares no response gets `default`.
+- Schemas as inline JSON Schema. `int()` is an integer from 0 to
+  4294967295, `obj()` sets `additionalProperties: false`, and
+  `optional` props are left out of `required`.
+
+## Serving it
+
+A route list cannot contain a route that documents that same list, so
+build the documented list with its own def and call it twice, as above.
+Each request to the app may then build `api()` twice. Notes are plain
+values, and the JSON is only rendered when `/openapi.json` is requested,
+but if routing shows up in a profile, serve the document from a
+separate app or a static file. `Air.Api.document(title, version, routes)` gives the document
+as a JSON value, for writing to a file or testing.
+
+The HEAD and OPTIONS answers the router makes by itself are not listed.
+Routes you register with `Air.Route.head` or `Air.Route.options` are.
+
+## Not included
+
+Security schemes, examples, `$ref` reuse, headers and cookies as
+parameters, and YAML output. A linter's "every operation should have
+security" rule will warn until security schemes exist. A docs UI such as
+Swagger UI or Redoc is a static page. Serve it with
+[`Air.static`](/docs/guides/static-files), pointed at `/openapi.json`.

@@ -29,3 +29,6 @@ bench/build.sh . bench/out/hello-head
 bench/ab.sh bench/out/hello-base bench/out/hello-head
 node bench/compare.mjs
 ```
+
+`HEADER="name: value"` adds a header to every request, for example a
+`traceparent` to measure continuing a trace instead of starting one.

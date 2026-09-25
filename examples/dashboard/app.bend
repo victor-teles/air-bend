@@ -91,6 +91,20 @@ def new_task() -> Air.Schema():
     Air.Schema.field("done", Air.Schema.boolean())
   ])
 
+# What the task routes answer, for the API document.
+def task_schema() -> Air.Schema():
+  Air.Schema.obj([
+    Air.Schema.field("id", Air.Schema.int()),
+    Air.Schema.field("title", Air.Schema.str()),
+    Air.Schema.field("done", Air.Schema.boolean())
+  ])
+
+def created_schema() -> Air.Schema():
+  Air.Schema.obj([
+    Air.Schema.field("id", Air.Schema.int()),
+    Air.Schema.field("task", new_task())
+  ])
+
 def create.fin(body: Maybe<&2, Air.Json()>) -> Air.Response():
   match body:
     case None{}:
@@ -134,19 +148,38 @@ def shutdown(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
 def pages() -> List<Air.Route()>:
   [Air.Route.get("/*path", files)]
 
-# The JSON routes, mounted under "/api" below.
+# The JSON routes, mounted under "/api" below. The task routes validate
+# and document with one schema each: `Api.query` and `Api.body` check
+# the request, and the notes feed `/openapi.json`.
 def api(switch: Air.Switch()) -> List<Air.Route()>:
   [
-    Air.Route.get("/stats", stats),
-    Air.Route.get("/tasks", Air.validate_query(tasks_query())(tasks)),
-    Air.Route.post("/tasks", Air.validate_json(new_task())(create)),
-    Air.Route.get("/hello/:name", greet),
-    Air.Route.post("/echo", echo),
-    Air.Route.post("/shutdown", shutdown(switch))
+    Air.Api.summary("Server stats", Air.Route.get("/stats", stats)),
+    Air.Api.tag("tasks",
+      Air.Api.summary("List tasks",
+        Air.Api.returns(200, Air.Schema.arr(task_schema()),
+          Air.Api.query(tasks_query(), Air.Route.get("/tasks", tasks))))),
+    Air.Api.tag("tasks",
+      Air.Api.summary("Create a task",
+        Air.Api.returns(201, created_schema(),
+          Air.Api.body(new_task(), Air.Route.post("/tasks", create))))),
+    Air.Api.summary("Greet by name", Air.Route.get("/hello/:name", greet)),
+    Air.Api.summary("Echo a JSON body", Air.Route.post("/echo", echo)),
+    Air.Api.summary("Stop the server", Air.Route.post("/shutdown", shutdown(switch)))
   ]
 
-def routes(switch: Air.Switch()) -> List<Air.Route()>:
-  Air.Route.all([Air.Route.mount("/api", api(switch)), pages()])
+# The API under "/api", as served and as documented.
+def api_mounted(switch: Air.Switch()) -> List<Air.Route()>:
+  Air.Route.mount("/api", api(switch))
+
+# `/openapi.json` documents `api_mounted`; it builds the list again
+# rather than containing itself.
+def routes(+switch: Air.Switch()) -> List<Air.Route()>:
+  Air.Route.all([
+    Air.health(),
+    api_mounted(switch),
+    [Air.Route.get("/openapi.json", Air.openapi("Air dashboard", "1.0.0", api_mounted(switch)))],
+    pages()
+  ])
 
 # The app takes the stop switch along with the request, as `serve_until`
 # hands it over, so a route can stop the server. Every request gets an

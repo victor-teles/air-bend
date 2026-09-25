@@ -4,7 +4,8 @@
 # base and head for each round so drift in the machine hits both alike.
 # Usage: bench/ab.sh <base-bin> <head-bin>
 # Env: ROUNDS (5), SECS (5), CONNS (32), BENCH_PORT (18080),
-#      OUT (bench/out/ab.jsonl). Compare with `node bench/compare.mjs`.
+#      OUT (bench/out/ab.jsonl), HEADER ("name: value" on every request,
+#      e.g. a traceparent). Compare with `node bench/compare.mjs`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 BASE=$1
@@ -14,6 +15,7 @@ SECS=${SECS:-5}
 CONNS=${CONNS:-32}
 PORT=${BENCH_PORT:-18080}
 OUT=${OUT:-bench/out/ab.jsonl}
+HEADER_ARGS=(); [[ -n "${HEADER:-}" ]] && HEADER_ARGS=(--header "$HEADER")
 URL="http://localhost:$PORT"
 BODY=$(head -c 1024 /dev/zero | tr '\0' x)
 mkdir -p "$(dirname "$OUT")"
@@ -57,8 +59,8 @@ for round in $(seq "$ROUNDS"); do
     bin=$BASE; [[ $side == head ]] && bin=$HEAD
     echo "round $round: $side"
     start "$bin" "$side"
-    node bench/bench.mjs --url "$URL/hello/world" --conns "$CONNS" --seconds "$SECS" --json | record "$side" "$round"
-    node bench/bench.mjs --url "$URL/echo" --method POST --body "$BODY" --conns "$CONNS" --seconds "$SECS" --json | record "$side" "$round"
+    node bench/bench.mjs --url "$URL/hello/world" --conns "$CONNS" --seconds "$SECS" ${HEADER_ARGS[@]+"${HEADER_ARGS[@]}"} --json | record "$side" "$round"
+    node bench/bench.mjs --url "$URL/echo" --method POST --body "$BODY" --conns "$CONNS" --seconds "$SECS" ${HEADER_ARGS[@]+"${HEADER_ARGS[@]}"} --json | record "$side" "$round"
     stop
   done
 done

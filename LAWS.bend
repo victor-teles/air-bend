@@ -22,6 +22,12 @@ import ./air/lib/race.bend as Race
 import ./air/lib/drain.bend as Drain
 import ./air/lib/server.bend as Server
 import ./air/lib/test.bend as Test
+import ./air/lib/config.bend as Config
+import ./air/lib/hooks.bend as Hooks
+import ./air/lib/health.bend as Health
+import ./air/lib/openapi.bend as OpenApi
+import ./air/lib/metrics.bend as Metrics
+import ./air/lib/trace.bend as Trace
 
 # Routing
 # -------
@@ -1032,8 +1038,13 @@ law log_hex_id_padded:
   {Random.hex_id(255, 4096) == "000000ff00001000" : String}
 
 law log_line_escapes:
-  {Log.line(5n, "i", "GET", "/a\"b", 200, 2n)
+  {Log.line("5", "i", "", "GET", "/a\"b", 200, 2n)
     == "{\"ts\":5,\"id\":\"i\",\"method\":\"GET\",\"path\":\"/a\\\"b\",\"status\":200,\"ms\":2}" : String}
+
+# With tracing on, the trace id follows the request id.
+law log_line_trace:
+  {Log.line("1790000000000", "i", "4bf92f3577b34da6a3ce929d0e0e4736", "GET", "/", 200, 0n)
+    == "{\"ts\":1790000000000,\"id\":\"i\",\"trace_id\":\"4bf92f3577b34da6a3ce929d0e0e4736\",\"method\":\"GET\",\"path\":\"/\",\"status\":200,\"ms\":0}" : String}
 
 # Store and rate limiting
 # -----------------------
@@ -1271,3 +1282,352 @@ law test_refuses_unended_head:
 
 law test_refuses_parse:
   {Test.Prepared.refused(Test.prepare(Http.Limits.default(), "GET / HTTP/2.0\r\n\r\n")) == 505 : U32}
+
+# Config
+# ------
+
+def env_sample() -> String:
+  "A=1\n# a comment\n\nexport B = \"two words\"\nC='x=y'\nnope\n=x\nA=2\n"
+
+# Comments and blanks skipped, `export` dropped, quotes off, the first
+# `=` splits, a later line wins.
+law config_parse:
+  {[Text.map_get(Config.parse(env_sample()), "A", ""),
+    Text.map_get(Config.parse(env_sample()), "B", ""),
+    Text.map_get(Config.parse(env_sample()), "C", "")]
+    == ["2", "two words", "x=y"] : List<&2, String>}
+
+law config_parse_keys:
+  {Map.keys(&2, String, Config.parse(env_sample())) == ["A", "B", "C"] : List<&2, String>}
+
+law config_malformed:
+  {Config.malformed(env_sample()) == [6, 7] : List<&2, U32>}
+
+law config_hidden:
+  {Config.show_value("DB_password", "hunter2") == "<hidden>" : String}
+
+law config_shown:
+  {Config.show_value("PORT", "80x") == "\"80x\"" : String}
+
+law config_limits_default:
+  {Config.limits_of("", "", "", "") == Http.Limits.default() : Http.Limits}
+
+law config_limits_body:
+  {Config.limits_of("", "", "", "10") == Http.Limits{16384, 100, 8192, 10} : Http.Limits}
+
+law config_limits_bad:
+  {Config.limits_problems("", "", "", "1e3") == ["AIR_MAX_BODY is not a number: \"1e3\""] : List<&2, String>}
+
+law config_timeouts_default:
+  {Config.timeouts_of("", "", "", "", "", "") == Server.Timeouts.default() : Server.Timeouts}
+
+law config_port_range:
+  {Config.port_problems("70000") == ["PORT is out of range: \"70000\""] : List<&2, String>}
+
+law config_port_ok:
+  {Config.port_problems("9090") == [] : List<&2, String>}
+
+# Hooks
+# -----
+
+def tag(req: Http.Request, res: Http.Response) -> IO(Http.Response):
+  IO.pure(Http.Response, Http.Response.with_header(res, "x-tag", "1"))
+
+law hooks_on_send_pure:
+  {Hooks.on_send(tag, noop, request("GET / HTTP/1.1\r"))
+    == IO.pure(Http.Response, Http.Response.with_header(Http.Response.empty(204), "x-tag", "1")) : IO(Http.Response)}
+
+def with_a(req: Http.Request) -> IO(Http.Request):
+  IO.pure(Http.Request, Http.Request.with_local(req, "a", "1"))
+
+def show_a(req: Http.Request) -> IO(Http.Response):
+  IO.pure(Http.Response, Http.Response.text(Http.Request.local(req, "a")))
+
+# The chain gets the request `on_request`'s function answers.
+law hooks_on_request_feeds:
+  {Hooks.on_request(with_a, show_a, request("GET / HTTP/1.1\r"))
+    == IO.pure(Http.Response, Http.Response.text("1")) : IO(Http.Response)}
+
+def missing(req: Http.Request) -> IO(Http.Response):
+  IO.pure(Http.Response, Http.Response.fail(Http.NotFound{"x"}))
+
+def ignore(req: Http.Request, e: Http.Error) -> IO(Unit):
+  IO.pure(Unit, Unit{})
+
+# `on_fail` observes: the failure goes on unchanged, for `on_error`.
+law hooks_on_fail_unchanged:
+  {Hooks.on_fail(ignore, missing, request("GET / HTTP/1.1\r"))
+    == IO.pure(Http.Response, Http.Response.fail(Http.NotFound{"x"})) : IO(Http.Response)}
+
+# Health
+# ------
+
+def checks(a: String, b: String) -> Map<&2, String>:
+  Map.set(&2, String, Map.set(&2, String, Map.new(&2, String), "db", b), "cache", a)
+
+law ready_ok:
+  {Http.Response.status(Health.readiness("", Map.new(&2, String))) == 200 : U32}
+
+law ready_body:
+  {Http.Response.body(Health.readiness("", checks("1", "1"))) == "{\"status\":\"ready\"}" : String}
+
+law ready_draining:
+  {Http.Response.body(Health.readiness("1", checks("1", "1"))) == "{\"status\":\"draining\"}" : String}
+
+law ready_down:
+  {Http.Response.body(Health.readiness("", checks("0", "1")))
+    == "{\"status\":\"not ready\",\"down\":[\"cache\"]}" : String}
+
+law ready_down_503:
+  {Http.Response.status(Health.readiness("", checks("0", "0"))) == 503 : U32}
+
+law ready_down_sorted:
+  {Health.down_checks(checks("0", "0")) == ["cache", "db"] : List<&2, String>}
+
+law ready_no_store:
+  {Http.Response.header(Health.readiness("1", Map.new(&2, String)), "cache-control") == "no-store" : String}
+
+law health_ok:
+  {Http.Response.body(Health.liveness()) == "{\"status\":\"ok\"}" : String}
+
+# OpenAPI
+# -------
+
+law oa_str:
+  {Json.render(OpenApi.to_json_schema(Schema.str())) == "{\"type\":\"string\"}" : String}
+
+law oa_obj_strict:
+  {Json.render(OpenApi.to_json_schema(Schema.obj([Schema.field("a", Schema.int()), Schema.optional("b", Schema.str())])))
+    == "{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":4294967295},\"b\":{\"type\":\"string\"}},\"required\":[\"a\"],\"additionalProperties\":false}" : String}
+
+law oa_obj_open:
+  {Json.render(OpenApi.to_json_schema(Schema.obj_open([Schema.optional("q", Schema.any())])))
+    == "{\"type\":\"object\",\"properties\":{\"q\":{}}}" : String}
+
+law oa_arr_enum:
+  {Json.render(OpenApi.to_json_schema(Schema.arr(Schema.one_of(["x"]))))
+    == "{\"type\":\"array\",\"items\":{\"type\":\"string\",\"enum\":[\"x\"]}}" : String}
+
+law oa_nested:
+  {Json.render(OpenApi.to_json_schema(Schema.obj([Schema.field("u", Schema.obj([Schema.field("n", Schema.null())]))])))
+    == "{\"type\":\"object\",\"properties\":{\"u\":{\"type\":\"object\",\"properties\":{\"n\":{\"type\":\"null\"}},\"required\":[\"n\"],\"additionalProperties\":false}},\"required\":[\"u\"],\"additionalProperties\":false}" : String}
+
+law oa_template:
+  {OpenApi.template(Router.parse_pattern("/users/:id/files/*rest")) == "/users/{id}/files/{rest}" : String}
+
+law oa_template_root:
+  {OpenApi.template(Router.parse_pattern("/")) == "/" : String}
+
+law oa_operation_id:
+  {OpenApi.operation_id("get", "/api/hello/{name}") == "get_api_hello_name" : String}
+
+law oa_mount_keeps_notes:
+  {Json.render(OpenApi.document("t", "1", Router.mount("/api", [OpenApi.summary("s", Router.get("/x", noop))])))
+    == "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"t\",\"version\":\"1\"},\"servers\":[{\"url\":\"/\"}],\"paths\":{\"/api/x\":{\"get\":{\"operationId\":\"get_api_x\",\"summary\":\"s\",\"responses\":{\"default\":{\"description\":\"response\"}}}}}}" : String}
+
+# Two methods on one path share its path item, in route order; a path
+# param is listed; a body brings its 400 and 422.
+law oa_document:
+  {Json.render(OpenApi.document("t", "1", [
+      OpenApi.returns(200, Schema.str(), Router.get("/t/:id", noop)),
+      OpenApi.body(Schema.boolean(), Router.post("/t/:id", noop))
+    ]))
+    == "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"t\",\"version\":\"1\"},\"servers\":[{\"url\":\"/\"}],\"paths\":{\"/t/{id}\":{\"get\":{\"operationId\":\"get_t_id\",\"parameters\":[{\"name\":\"id\",\"in\":\"path\",\"required\":true,\"schema\":{\"type\":\"string\"}}],\"responses\":{\"200\":{\"description\":\"OK\",\"content\":{\"application/json\":{\"schema\":{\"type\":\"string\"}}}}}},\"post\":{\"operationId\":\"post_t_id\",\"parameters\":[{\"name\":\"id\",\"in\":\"path\",\"required\":true,\"schema\":{\"type\":\"string\"}}],\"requestBody\":{\"required\":true,\"content\":{\"application/json\":{\"schema\":{\"type\":\"boolean\"}}}},\"responses\":{\"400\":{\"description\":\"Bad Request\"},\"422\":{\"description\":\"Unprocessable Content\",\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"integer\"},\"error\":{\"type\":\"string\"},\"errors\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}}}}}}}}}" : String}
+
+# `body` still validates: a body that fails the schema never reaches the
+# handler.
+law oa_body_validates:
+  {Router.dispatch([OpenApi.body(Schema.boolean(), Router.post("/t", noop))],
+      Http.Request.with_body(request("POST /t HTTP/1.1\r\ncontent-type: application/json\r"), "5"))
+    == IO.pure(Http.Response, Http.Response.with_route(Schema.unprocessable(Schema.errors(Schema.boolean(), Json.of_u32(5))), "/t")) : IO(Http.Response)}
+
+# And a body that matches reaches it.
+law oa_body_passes:
+  {Router.dispatch([OpenApi.body(Schema.boolean(), Router.post("/t", noop))],
+      Http.Request.with_body(request("POST /t HTTP/1.1\r\ncontent-type: application/json\r"), "true"))
+    == IO.pure(Http.Response, Http.Response.with_route(Http.Response.empty(204), "/t")) : IO(Http.Response)}
+
+# Route labels
+# ------------
+
+law route_pattern_named:
+  {Router.render_pattern(Router.parse_pattern("/users/:id/files/*rest")) == "/users/:id/files/*rest" : String}
+
+law route_pattern_root:
+  {Router.render_pattern(Router.parse_pattern("/")) == "/" : String}
+
+# A route that runs leaves its pattern, as written, on the response.
+law route_on_hit:
+  {Router.dispatch([Router.get("/users/:id", noop)], request("GET /users/7 HTTP/1.1\r"))
+    == IO.pure(Http.Response, Http.Response.with_route(Http.Response.empty(204), "/users/:id")) : IO(Http.Response)}
+
+law route_mounted:
+  {Router.dispatch(Router.mount("/api", [Router.get("/t/:id", noop)]), request("GET /api/t/1 HTTP/1.1\r"))
+    == IO.pure(Http.Response, Http.Response.with_route(Http.Response.empty(204), "/api/t/:id")) : IO(Http.Response)}
+
+# HEAD running the GET route is labelled with the GET route.
+law route_on_fallback:
+  {Router.dispatch([Router.get("/", noop)], request("HEAD / HTTP/1.1\r"))
+    == IO.pure(Http.Response, Http.Response.with_route(Http.Response.empty(204), "/")) : IO(Http.Response)}
+
+# No route ran: no label, for 404 and 405 alike.
+law route_none_on_404:
+  {Router.dispatch([Router.get("/a", noop)], request("GET /b HTTP/1.1\r"))
+    == IO.pure(Http.Response, Http.Response.not_found()) : IO(Http.Response)}
+
+law route_none_on_405:
+  {Router.dispatch([Router.get("/a", noop)], request("POST /a HTTP/1.1\r"))
+    == IO.pure(Http.Response, Http.Response.method_not_allowed("GET, HEAD, OPTIONS")) : IO(Http.Response)}
+
+law route_read:
+  {Http.Response.route(Http.Response.with_route(Http.Response.empty(204), "/a")) == "/a" : String}
+
+# `settle` removes the label, so the wire never carries it.
+law route_settled:
+  {Http.Response.settle(Http.Prod{}, Http.Response.with_route(Http.Response.empty(204), "/a"))
+    == Http.Response.empty(204) : Http.Response}
+
+law route_settled_failed:
+  {Http.Response.header(Http.Response.settle(Http.Prod{}, Http.Response.with_route(Http.Response.fail(Http.NotFound{"x"}), "/a")), "air-route")
+    == "" : String}
+
+# Metrics
+# -------
+
+def none() -> Map<&2, String>:
+  Map.new(&2, String)
+
+def has.fin(r: Maybe<&2, Text.Two()>) -> Bool:
+  match r:
+    case Some{kv}:
+      True{}
+    case None{}:
+      False{}
+
+# Whether `s` contains `part`.
+def has(+s: String, +part: String) -> Bool:
+  has.fin(Text.split_str(s, part))
+
+law m_document:
+  {Metrics.expose_text(Metrics.observe("GET", "/a", 200, 3, none()))
+    == "# HELP air_http_requests_total Requests answered, by method, route and status.\n# TYPE air_http_requests_total counter\nair_http_requests_total{method=\"GET\",route=\"/a\",status=\"200\"} 1\n# HELP air_http_request_duration_seconds Time in the app, from the middleware's view.\n# TYPE air_http_request_duration_seconds histogram\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"0.005\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"0.01\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"0.025\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"0.05\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"0.1\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"0.25\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"0.5\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"1\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"2.5\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"5\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"10\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"+Inf\"} 1\nair_http_request_duration_seconds_sum{route=\"/a\"} 0.003\nair_http_request_duration_seconds_count{route=\"/a\"} 1\n" : String}
+
+law m_counter:
+  {has(Metrics.expose_text(Metrics.observe("GET", "/a", 200, 3, Metrics.observe("GET", "/a", 200, 4, none()))),
+    "air_http_requests_total{method=\"GET\",route=\"/a\",status=\"200\"} 2\n") == True{} : Bool}
+
+# 30 ms counts in 0.05 and above, not in 0.025.
+law m_bucket:
+  {[has(Metrics.expose_text(Metrics.observe("GET", "/a", 200, 30, none())), "le=\"0.025\"} 0\n"),
+    has(Metrics.expose_text(Metrics.observe("GET", "/a", 200, 30, none())), "le=\"0.05\"} 1\n")]
+    == [True{}, True{}] : List<&2, Bool>}
+
+# A bound is inclusive: 50 ms is in 0.05.
+law m_bucket_edge:
+  {[Metrics.bucket(50), Metrics.bucket(51), Metrics.bucket(0), Metrics.bucket(10001)]
+    == ["0.05", "0.1", "0.005", "+Inf"] : List<&2, String>}
+
+law m_le:
+  {[Metrics.le(5), Metrics.le(10), Metrics.le(250), Metrics.le(1000), Metrics.le(2500), Metrics.le(10000)]
+    == ["0.005", "0.01", "0.25", "1", "2.5", "10"] : List<&2, String>}
+
+law m_sum:
+  {has(Metrics.expose_text(Metrics.observe("GET", "/a", 200, 1500, Metrics.observe("GET", "/a", 200, 3, none()))),
+    "air_http_request_duration_seconds_sum{route=\"/a\"} 1.503\n") == True{} : Bool}
+
+# The milliseconds carry into seconds, so the sum does not wrap at 49 days.
+law m_sum_carry:
+  {[Text.map_get(Metrics.observe("GET", "/a", 200, 2, Metrics.observe("GET", "/a", 200, 999, none())), "s\t/a", ""),
+    Text.map_get(Metrics.observe("GET", "/a", 200, 2, Metrics.observe("GET", "/a", 200, 999, none())), "m\t/a", "")]
+    == ["1", "1"] : List<&2, String>}
+
+law m_other:
+  {has(Metrics.expose_text(Metrics.observe("BREW", "/a", 200, 1, none())), "method=\"OTHER\"") == True{} : Bool}
+
+law m_escape:
+  {has(Metrics.expose_text(Metrics.observe("GET", "/a\"b\\\n", 200, 1, none())), "route=\"/a\\\"b\\\\\\n\"") == True{} : Bool}
+
+law m_unmatched:
+  {has(Metrics.expose_text(Metrics.observe("GET", "", 404, 1, none())),
+    "air_http_requests_total{method=\"GET\",route=\"\",status=\"404\"} 1\n") == True{} : Bool}
+
+law m_app_counter:
+  {has(Metrics.expose_text(Metrics.tally("jobs_done", Metrics.tally("jobs_done", none()))),
+    "# TYPE app_jobs_done_total counter\napp_jobs_done_total 2\n") == True{} : Bool}
+
+law m_app_name_checked:
+  {[Metrics.tally("Jobs", none()), Metrics.tally("a-b", none()), Metrics.tally("", none())]
+    == [none(), none(), none()] : List<&2, Map<&2, String>>}
+
+# The `+Inf` bucket and `_count` agree with the counters' total.
+law m_count_matches:
+  {has(Metrics.expose_text(Metrics.observe("POST", "/a", 500, 20000, Metrics.observe("GET", "/a", 200, 1, none()))),
+    "le=\"10\"} 1\nair_http_request_duration_seconds_bucket{route=\"/a\",le=\"+Inf\"} 2\nair_http_request_duration_seconds_sum{route=\"/a\"} 20.001\nair_http_request_duration_seconds_count{route=\"/a\"} 2\n") == True{} : Bool}
+
+law m_content_type:
+  {Http.Response.header(Metrics.exposition(none()), "content-type") == "text/plain; version=0.0.4; charset=utf-8" : String}
+
+# Trace context
+# -------------
+
+def tp_trace() -> String:
+  "4bf92f3577b34da6a3ce929d0e0e4736"
+
+def tp_parent() -> String:
+  "00f067aa0ba902b7"
+
+law tp_valid:
+  {Trace.parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+    == Some{Trace.Parent{tp_trace(), tp_parent(), "01"}} : Maybe<&2, Trace.Parent>}
+
+law tp_zero_trace:
+  {Trace.parse("00-00000000000000000000000000000000-00f067aa0ba902b7-01") == None{} : Maybe<&2, Trace.Parent>}
+
+law tp_zero_parent:
+  {Trace.parse("00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01") == None{} : Maybe<&2, Trace.Parent>}
+
+law tp_upper:
+  {Trace.parse("00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01") == None{} : Maybe<&2, Trace.Parent>}
+
+law tp_ff:
+  {Trace.parse("ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01") == None{} : Maybe<&2, Trace.Parent>}
+
+# A later version is read by its first four fields.
+law tp_future:
+  {Trace.parse("01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-extra")
+    == Some{Trace.Parent{tp_trace(), tp_parent(), "01"}} : Maybe<&2, Trace.Parent>}
+
+# Version 00 has exactly four.
+law tp_00_extra:
+  {Trace.parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-extra") == None{} : Maybe<&2, Trace.Parent>}
+
+law tp_short:
+  {[Trace.parse("00-4bf92f3577b34da6a3ce929d0e0e473-00f067aa0ba902b7-01"), Trace.parse(""), Trace.parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-1")]
+    == [None{}, None{}, None{}] : List<&2, Maybe<&2, Trace.Parent>>}
+
+law tp_render:
+  {Trace.render(tp_trace(), tp_parent(), "01") == "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" : String}
+
+law tp_sampled_bit:
+  {[Trace.is_sampled("01"), Trace.is_sampled("00"), Trace.is_sampled("03"), Trace.is_sampled("02")]
+    == [True{}, False{}, True{}, False{}] : List<&2, Bool>}
+
+# Sampling reads the trace id's last eight hex digits: the same trace is
+# always kept or always dropped.
+law sample_stable:
+  {[Trace.keeps(4, "4bf92f3577b34da6a3ce929d00000004"), Trace.keeps(4, "4bf92f3577b34da6a3ce929d00000005"),
+    Trace.keeps(1, tp_trace()), Trace.keeps(0, "4bf92f3577b34da6a3ce929d00000004")]
+    == [True{}, False{}, True{}, False{}] : List<&2, Bool>}
+
+law span_name:
+  {[Trace.span_name("GET", "/users/:id"), Trace.span_name("POST", "")] == ["GET /users/:id", "POST"] : List<&2, String>}
+
+law span_json:
+  {Trace.json(Trace.Span{tp_trace(), "a1b2c3d4e5f60718", tp_parent(), "GET /users/:id", "1790000000000", 3, 200, "GET", "/users/:id", "/users/7"})
+    == "{\"trace_id\":\"4bf92f3577b34da6a3ce929d0e0e4736\",\"span_id\":\"a1b2c3d4e5f60718\",\"parent_span_id\":\"00f067aa0ba902b7\",\"name\":\"GET /users/:id\",\"start_time_unix_ms\":1790000000000,\"duration_ms\":3,\"http.request.method\":\"GET\",\"http.route\":\"/users/:id\",\"url.path\":\"/users/7\",\"http.response.status_code\":200}" : String}
+
+# The downstream value carries this span's id, not the caller's.
+law tp_locals:
+  {Http.Request.local(Trace.with_ids(request("GET / HTTP/1.1\r"), Trace.Ids{tp_trace(), "a1b2c3d4e5f60718", tp_parent(), "01"}), "traceparent")
+    == "00-4bf92f3577b34da6a3ce929d0e0e4736-a1b2c3d4e5f60718-01" : String}
+

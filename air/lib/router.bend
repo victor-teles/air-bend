@@ -1,6 +1,7 @@
 import Base
 import ./text.bend as Text
 import ./http.bend as Http
+import ./schema.bend as Schema
 
 # Router
 # ======
@@ -71,11 +72,21 @@ def has_slash(+path: String) -> Bool:
 
 # `slash` remembers whether the pattern ended with a slash, for the
 # strict policy.
+# What a route says about itself, for an API document (openapi.bend):
+# notes cost a list field per route and nothing else until a document
+# is rendered.
+type Note is Data:
+  Summary{text: String}
+  Tag{name: String}
+  Body{schema: Schema.Schema}
+  Query{schema: Schema.Schema}
+  Returns{status: U32, schema: Schema.Schema}
+
 type Route is Type:
-  Route{method: Http.Method, pattern: List<&2, Seg>, slash: Bool, handler: Handler()}
+  Route{method: Http.Method, pattern: List<&2, Seg>, slash: Bool, handler: Handler(), notes: List<&2, Note>}
 
 def new(method: Http.Method, +path: String, handler: Handler()) -> Route:
-  Route{method, parse_pattern(path), has_slash(path), handler}
+  Route{method, parse_pattern(path), has_slash(path), handler, Nil{}}
 
 def get(path: String, handler: Handler()) -> Route:
   new(Http.GET{}, path, handler)
@@ -102,6 +113,31 @@ def head(path: String, handler: Handler()) -> Route:
 def options(path: String, handler: Handler()) -> Route:
   new(Http.OPTIONS{}, path, handler)
 
+# A route with one more note, newest first.
+def with_note(note: Note, route: Route) -> Route:
+  match route:
+    case Route{m, pat, slash, h, ns}:
+      Route{m, pat, slash, h, Con{note, ns}}
+
+# A route whose handler is wrapped in `mw`; for one route, where
+# `wrap` would need a template.
+def around(mw: Middleware(), route: Route) -> Route:
+  match route:
+    case Route{m, pat, slash, h, ns}:
+      Route{m, pat, slash, mw(h), ns}
+
+# What a route says about itself without its handler: its method's
+# name, its pattern and its notes.
+type Doc is Data:
+  Doc{method: String, pattern: List<&2, Seg>, notes: List<&2, Note>}
+
+def docs(routes: List<Route>) -> List<&2, Doc>:
+  match routes:
+    case Nil{}:
+      Nil{}
+    case Con{Route{m, pat, slash, h, ns}, rest}:
+      Con{Doc{Http.Method.show(m), pat, ns}, docs(rest)}
+
 # Mounting
 # --------
 
@@ -112,8 +148,8 @@ def mount.go(+prefix: List<&2, Seg>, routes: List<Route>) -> List<Route>:
   match routes:
     case Nil{}:
       Nil{}
-    case Con{Route{m, pat, slash, h}, rest}:
-      Con{Route{m, List.append(&2, Seg, prefix, pat), slash, h}, mount.go(prefix, rest)}
+    case Con{Route{m, pat, slash, h, ns}, rest}:
+      Con{Route{m, List.append(&2, Seg, prefix, pat), slash, h, ns}, mount.go(prefix, rest)}
 
 def mount(prefix: String, routes: List<Route>) -> List<Route>:
   mount.go(parse_pattern(prefix), routes)
@@ -125,8 +161,8 @@ def wrap(~mw: Middleware(), routes: List<Route>) -> List<Route>:
   match routes:
     case Nil{}:
       Nil{}
-    case Con{Route{m, pat, slash, h}, rest}:
-      Con{Route{m, pat, slash, mw(h)}, wrap(~mw, rest)}
+    case Con{Route{m, pat, slash, h, ns}, rest}:
+      Con{Route{m, pat, slash, mw(h), ns}, wrap(~mw, rest)}
 
 def append_routes(xs: List<Route>, ys: List<Route>) -> List<Route>:
   match xs:
@@ -161,6 +197,31 @@ def shape.go(pat: List<&2, Seg>, rev: String) -> String:
       String.reverse(rev)
     case Con{h, t}:
       shape.go(t, Text.rev_onto(seg_shape(h), rev))
+
+def seg_named(seg: Seg) -> String:
+  match seg:
+    case Lit{text}:
+      "/" ++ text
+    case Param{name}:
+      "/:" ++ name
+    case Rest{name}:
+      "/*" ++ name
+
+def render_pattern.go(pat: List<&2, Seg>, rev: String) -> String:
+  match pat:
+    case Nil{}:
+      String.reverse(rev)
+    case Con{h, t}:
+      render_pattern.go(t, Text.rev_onto(seg_named(h), rev))
+
+# The route's pattern as written, names kept: "/users/:id", "/files/*path",
+# "/" for the root. A mount prefix is part of it.
+def render_pattern(pat: List<&2, Seg>) -> String:
+  match pat:
+    case Nil{}:
+      "/"
+    case Con{h, t}:
+      render_pattern.go(Con{h, t}, SNil{})
 
 # The shape of a pattern, params and wildcards anonymized: "/users/:/*".
 # Two routes with the same method and shape conflict.
@@ -206,7 +267,7 @@ def conflicts.go(routes: List<Route>, +seen: Map<&2, String>, acc: List<&2, Stri
   match routes:
     case Nil{}:
       List.reverse(&2, String, acc)
-    case Con{Route{m, +pat, slash, h}, rest}:
+    case Con{Route{m, +pat, slash, h, ns}, rest}:
       +key = Http.Method.show(m) ++ " " ++ shape_with_slash(pat, slash)
       conflicts.go(
         rest,
@@ -248,7 +309,7 @@ def pattern_of(routes: List<Route>) -> List<&2, List<&2, Seg>>:
   match routes:
     case Nil{}:
       Nil{}
-    case Con{Route{m, pat, slash, h}, rest}:
+    case Con{Route{m, pat, slash, h, ns}, rest}:
       Con{pat, pattern_of(rest)}
 
 # Matching
@@ -355,11 +416,12 @@ def redirect_target(+target: String) -> String:
 
 # The outcome of walking the routes. `Hit` is an exact match. `Fallback`
 # is a GET route found while serving HEAD, kept unless an explicit HEAD
-# route turns up later. `Miss` carries the methods routes offered for
-# this path, so 405 and OPTIONS can list them.
+# route turns up later. Both keep the route's pattern, rendered only if
+# the route runs. `Miss` carries the methods routes offered for this
+# path, so 405 and OPTIONS can list them.
 type Pick is Type:
-  Hit{handler: Handler(), params: Map<&2, String>}
-  Fallback{handler: Handler(), params: Map<&2, String>, allowed: Map<&2, String>}
+  Hit{handler: Handler(), params: Map<&2, String>, pattern: List<&2, Seg>}
+  Fallback{handler: Handler(), params: Map<&2, String>, pattern: List<&2, Seg>, allowed: Map<&2, String>}
   Miss{allowed: Map<&2, String>}
 
 def mark(m: Map<&2, String>, name: String) -> Map<&2, String>:
@@ -382,22 +444,22 @@ def render_allow(+allowed: Map<&2, String>) -> String:
 
 # Folds one path-matching route into the pick. `same` is an exact method
 # match, `head_get` a GET route seen by a HEAD request.
-def consider.fin(acc: Pick, handler: Handler(), name: String, same: Bool, head_get: Bool, matched: Maybe<&2, Map<&2, String>>) -> Pick:
+def consider.fin(acc: Pick, handler: Handler(), pat: List<&2, Seg>, name: String, same: Bool, head_get: Bool, matched: Maybe<&2, Map<&2, String>>) -> Pick:
   match acc same head_get matched:
     case _ _ _ None{}:
       acc
-    case Hit{h, p} _ _ Some{params}:
-      Hit{h, p}
+    case Hit{h, p, hp} _ _ Some{params}:
+      Hit{h, p, hp}
     case Miss{allowed} True{} _ Some{params}:
-      Hit{handler, params}
-    case Fallback{h, p, allowed} True{} _ Some{params}:
-      Hit{handler, params}
+      Hit{handler, params, pat}
+    case Fallback{h, p, hp, allowed} True{} _ Some{params}:
+      Hit{handler, params, pat}
     case Miss{allowed} False{} True{} Some{params}:
-      Fallback{handler, params, mark(allowed, name)}
+      Fallback{handler, params, pat, mark(allowed, name)}
     case Miss{allowed} False{} False{} Some{params}:
       Miss{mark(allowed, name)}
-    case Fallback{h, p, allowed} False{} _ Some{params}:
-      Fallback{h, p, mark(allowed, name)}
+    case Fallback{h, p, hp, allowed} False{} _ Some{params}:
+      Fallback{h, p, hp, mark(allowed, name)}
 
 # `OPTIONS *` asks about the server, not a path: every route counts as
 # matching and none is run.
@@ -415,11 +477,12 @@ type Ask is Data:
 
 def consider.route(acc: Pick, route: Route, +ask: Ask) -> Pick:
   match route ask:
-    case Route{m, pat, slash, handler} Ask{segs, method, strict, path_slash, star}:
+    case Route{m, +pat, slash, handler, ns} Ask{segs, method, strict, path_slash, star}:
       +name = Http.Method.show(m)
       consider.fin(
         acc,
         handler,
+        pat,
         name,
         Bool.and(Bool.not(star), String.eq(name, method)),
         Bool.and(Bool.not(star), Bool.and(String.eq(method, "HEAD"), String.eq(name, "GET"))),
@@ -429,10 +492,10 @@ def consider.route(acc: Pick, route: Route, +ask: Ask) -> Pick:
 
 def consider(acc: Pick, route: Route, +ask: Ask) -> Pick:
   match acc:
-    case Hit{handler, params}:
-      Hit{handler, params}
-    case Fallback{h, p, allowed}:
-      consider.route(Fallback{h, p, allowed}, route, ask)
+    case Hit{handler, params, pat}:
+      Hit{handler, params, pat}
+    case Fallback{h, p, pat, allowed}:
+      consider.route(Fallback{h, p, pat, allowed}, route, ask)
     case Miss{allowed}:
       consider.route(Miss{allowed}, route, ask)
 
@@ -463,12 +526,18 @@ def miss.pick(+allowed: Map<&2, String>, options: Bool, none: Bool) -> Http.Resp
 def miss(+allowed: Map<&2, String>, options: Bool) -> Http.Response:
   miss.pick(allowed, options, List.is_empty(&2, String, Map.keys(&2, String, allowed)))
 
+def annotate(pattern: List<&2, Seg>, res: Http.Response) -> IO(Http.Response):
+  IO.pure(Http.Response, Http.Response.with_route(res, render_pattern(pattern)))
+
+# A route that runs leaves its pattern on the response (`air-route`), so
+# a middleware outside dispatch can label by route. `settle` strips it
+# before the wire.
 def run(pick: Pick, +req: Http.Request) -> IO(Http.Response):
   match pick:
-    case Hit{handler, params}:
-      handler(Http.Request.with_params(req, params))
-    case Fallback{handler, params, allowed}:
-      handler(Http.Request.with_params(req, params))
+    case Hit{handler, params, pat}:
+      IO.bind(Http.Response, Http.Response, handler(Http.Request.with_params(req, params)), annotate(pat))
+    case Fallback{handler, params, pat, allowed}:
+      IO.bind(Http.Response, Http.Response, handler(Http.Request.with_params(req, params)), annotate(pat))
     case Miss{+allowed}:
       IO.pure(Http.Response, miss(allowed, Http.Method.is_eq(Http.Request.method(req), Http.OPTIONS{})))
 
@@ -482,9 +551,9 @@ def describe.miss(+allowed: Map<&2, String>, none: Bool) -> String:
 # What a pick would do, in a word; for laws. A miss lists its `Allow`.
 def describe(pick: Pick) -> String:
   match pick:
-    case Hit{handler, params}:
+    case Hit{handler, params, pat}:
       "hit"
-    case Fallback{handler, params, allowed}:
+    case Fallback{handler, params, pat, allowed}:
       "fallback"
     case Miss{+allowed}:
       describe.miss(allowed, List.is_empty(&2, String, Map.keys(&2, String, allowed)))

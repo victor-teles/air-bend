@@ -18,6 +18,8 @@ const conns = Number(args.conns ?? 64);
 const seconds = Number(args.seconds ?? 10);
 const method = (args.method ?? "GET").toUpperCase();
 const body = args.body ?? null;
+// `--header "name: value"` adds one request header, e.g. a traceparent.
+const extra = args.header ? Object.fromEntries([args.header.split(/:\s*/, 2)]) : {};
 const close = process.argv.includes("--close");
 const json = process.argv.includes("--json");
 
@@ -34,7 +36,7 @@ function once() {
     const t0 = performance.now();
     const req = http.request(
       { hostname: url.hostname, port: url.port, path: url.pathname + url.search, method, agent,
-        headers: { ...(close ? { connection: "close" } : {}),
+        headers: { ...extra, ...(close ? { connection: "close" } : {}),
                    ...(body ? { "content-type": "text/plain", "content-length": Buffer.byteLength(body) } : {}) } },
       (res) => {
         res.on("data", (c) => (bytes += c.length));

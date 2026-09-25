@@ -55,6 +55,54 @@ rounds, within the noise. The runner's own noise has not been measured
 yet; if a same-binary run there strays past 15%, raise `ROUNDS` before
 the threshold.
 
+## 2026-09-24 (plan 026, tracing), Apple Silicon, 32 connections, 5s, `ab.sh` with 7 rounds
+
+This compares hello's full stack, with `Air.log`'s wall-clock `ts`,
+before and after adding `Air.trace` inside `request_id`. The machine was
+noisy that day: the spreads were 20-70%, and some rounds dropped by
+half on both sides. The medians below are from the steady rounds (2-7
+for start and continue, 1-4 for drop). The full JSONL is in
+`bench/out/ab-026-*.jsonl`.
+
+| case                                        | draws | GET no trace | GET trace | ratio      |
+| ------------------------------------------- | ----: | -----------: | --------: | ---------: |
+| start a trace, `Trace.print`                | 6     | ~12.4k       | ~8.2k     | ~0.66      |
+| start a trace, `Trace.drop`                 | 6     | ~12.6k       | ~8.6k     | ~0.70      |
+| continue a `traceparent`, `Trace.print`     | 2     | ~10.5k       | ~9.0k     | ~0.85      |
+
+Almost all of the cost is the random draws. Each draw is a trip
+through the runtime's worker pool, so four more draws for a new trace
+id cost about 15-20% more than continuing a trace. Printing the span
+line costs a few percent. Starting a trace crosses plan 026's 30% STOP
+line. Cheaper trace ids would mean fewer draws mixed with the clock,
+which weakens the randomness the spec asks for, so that choice is left
+to the operator. The CI gate (0.85) fails on hello with tracing on.
+POST ratios were 0.75 for start and 0.83 for continue, with a few
+connection errors on both sides.
+
+## 2026-09-24 (plan 025, metrics), Apple Silicon, 32 connections, 5s, `ab.sh` with 7 rounds
+
+Two A/Bs of native hello builds, each measured with nothing else running.
+The first compares the tree before 025 with the router's `air-route`
+annotation and the `settle` strip added, with no metrics middleware.
+The second compares that build with `Air.metrics` added outermost in
+hello's `use` list: one store lock and five map writes per request.
+Medians:
+
+| change                          | target            | before | after | after/before | spreads     |
+| ------------------------------- | ----------------- | -----: | ----: | -----------: | ----------- |
+| router annotation + strip       | GET /hello/world  | 16096  | 15894 | 0.987        | 6.8%, 8.7%  |
+| router annotation + strip       | POST /echo 1KB    | 9073   | 9025  | 0.995        | 19.9%, 15.6% |
+| `Air.metrics` in the stack      | GET /hello/world  | 14572  | 12548 | 0.861        | 13.2%, 11.4% |
+| `Air.metrics` in the stack      | POST /echo 1KB    | 8277   | 7908  | 0.956        | 22.2%, 13.2% |
+
+The annotation is within noise. The middleware costs about 14% on the
+cheapest route, about as much as the rate-limited route pays for its
+own lock. Together they come to about 0.85 of the tree before 025, which
+is at the CI gate's threshold, so a pull request that adds metrics to
+hello may need `bench-accepted`. An app that does not use `Air.metrics`
+pays only for the annotation.
+
 ## 2026-09-21 (after Tier 5 store, rate limiting and sessions), Apple Silicon, 32 connections, 5s
 
 The store field on every request costs nothing measurable. `session`

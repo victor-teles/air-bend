@@ -10,6 +10,8 @@ curl 'localhost:8080/search?q=bend'
 curl -d 'ping' localhost:8080/echo
 ```
 
-`app.bend` holds the routes and middleware, and `main.bend` serves them.
+`app.bend` holds the routes and middleware, and `main.bend` serves them
+with `Air.serve_env`: `PORT=9090 bend examples/hello/main.bend` moves it,
+and `GREETING=Hi` (or a `.env` line) changes `/config/greeting`.
 `bend tests/hello.bend` (from the repo root) runs the app without a
 socket.

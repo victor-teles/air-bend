@@ -5,3 +5,30 @@ description: Air against a Node server with the same routes.
 
 `bench/run.sh` compares a native build of the example against a Node server
 with the same routes. See `bench/README.md` for the tool and current numbers.
+
+## In CI
+
+On a pull request, CI builds the hello example from the base branch and
+from the pull request and runs them one after the other on the same
+runner, alternating for five rounds of five seconds each, on
+`GET /hello/:name` and a 1 KB `POST /echo`. A shared runner's speed
+changes from machine to machine, so CI compares the two builds with each
+other and keeps no stored numbers. The job fails when the pull request's
+median req/s on either route falls below 85% of the base's, and it
+writes the table to the run's summary.
+
+Some changes are worth their cost, as the security headers were. Add the
+`bench-accepted` label to the pull request: the table is still reported,
+and the job passes.
+
+Locally, the same thing:
+
+```
+bench/build.sh /path/to/base-checkout bench/out/hello-base
+bench/build.sh . bench/out/hello-head
+bench/ab.sh bench/out/hello-base bench/out/hello-head
+node bench/compare.mjs
+```
+
+`HEADER="name: value"` adds a header to every request, for example a
+`traceparent` to measure continuing a trace instead of starting one.

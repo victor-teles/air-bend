@@ -1,0 +1,52 @@
+name: Set up Bend
+description: >
+  Installs a pinned Bend release from GitHub, checked against its sha256,
+  and clang 19 for native builds (`bend x.bend -o out` needs clang 19+).
+inputs:
+  version:
+    description: Bend release to install.
+    default: "2.0.19"
+  sha256:
+    description: sha256 of bend-<version>-linux-x64.tar.gz.
+    default: "4f50d0a34283bb4e9ad6277a36fd91ef20c5d8992ca857c8185e605b866425b9"
+  clang:
+    description: Install clang 19 for native builds.
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Cache Bend
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.bend
+        key: bend-${{ runner.os }}-${{ inputs.version }}-${{ inputs.sha256 }}
+    - name: Download Bend
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        name="bend-${{ inputs.version }}-linux-x64.tar.gz"
+        tmp=$(mktemp -d)
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$tmp/$name" \
+          "https://github.com/bendlang/bend/releases/download/v${{ inputs.version }}/$name"
+        echo "${{ inputs.sha256 }}  $tmp/$name" | sha256sum -c -
+        tar -xzf "$tmp/$name" -C "$tmp"
+        mkdir -p ~/.bend/bin
+        mv "$tmp/bend/bend2" "$tmp/bend/guide" ~/.bend/
+        mv "$tmp/bend/bin/bend" ~/.bend/bin/bend
+    - name: Put Bend on the PATH
+      shell: bash
+      run: |
+        echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+        echo "BEND_NO_TELEMETRY=1" >> "$GITHUB_ENV"
+    - name: Install clang 19
+      if: inputs.clang == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y -q clang-19
+        clang-19 --version | head -1
+    - name: Show the toolchain
+      shell: bash
+      run: bend version

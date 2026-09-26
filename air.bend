@@ -16,6 +16,14 @@ import ./air/lib/shield.bend as Shield
 import ./air/lib/router.bend as Router
 import ./air/lib/drain.bend as Drain
 import ./air/lib/server.bend as Server
+import ./air/lib/test.bend as Test
+import ./air/lib/config.bend as Config
+import ./air/lib/hooks.bend as Hooks
+import ./air/lib/health.bend as Health
+import ./air/lib/openapi.bend as OpenApi
+import ./air/lib/metrics.bend as Metric
+import ./air/lib/clock.bend as Clock
+import ./air/lib/trace.bend as Trace
 
 # Air
 # ===
@@ -74,6 +82,11 @@ import ./air/lib/server.bend as Server
 #   race.bend     deadlines: an effect raced against a watchdog
 #   drain.bend    the stop switch and the tally of requests in flight
 #   server.bend   the HTTP/1.1 connection loop over TCP
+#   test.bend     running an app on a request without a socket
+#   config.bend   settings from the environment and a `.env` file
+#   hooks.bend    lifecycle hooks as middleware with a name
+#   health.bend   /healthz and /readyz, and readiness checks
+#   openapi.bend  an OpenAPI 3.1 document from the routes
 #
 # One level down so that a module's C name (`air/lib/json.parse`) can
 # never be the facade's (`air.Json.parse`): the backend would refuse the
@@ -402,6 +415,11 @@ def Response.body(r: Response()) -> String:
 def Response.header(r: Response(), name: String) -> String:
   Http.Response.header(r, name)
 
+# The pattern of the route that answered, as written ("/users/:id"),
+# for a middleware outside `dispatch`; "" when no route did.
+def Response.route(r: Response()) -> String:
+  Http.Response.route(r)
+
 def Response.with_status(r: Response(), status: U32) -> Response():
   Http.Response.with_status(r, status)
 
@@ -463,9 +481,17 @@ def Response.sse(chan: Chan(String)) -> Response():
 # ------
 
 # A channel for `Response.stream`: room for eight pieces, so a producer
-# ahead of a slow client waits rather than piling up memory.
+# ahead of a slow client waits rather than piling up memory. The server
+# takes the next piece only once the last is in the kernel's buffer, so
+# a stream holds at most the window plus one piece per connection.
 def Stream.new() -> IO(Chan(String)):
   Chan.new(String, 8)
+
+# A channel with room for `n` pieces (at least 1). A bigger window
+# absorbs a producer's bursts, but holds up to `n` times the piece size
+# per connection, and a producer finds out later that the client left.
+def Stream.with_room(n: U32) -> IO(Chan(String)):
+  Chan.new(String, U32.max(n, 1))
 
 # Sse
 # ---
@@ -871,6 +897,43 @@ def use(mws: List<Middleware()>, handler: Handler()) -> Handler():
 def on_error(render: Render(), next: Handler(), req: Request()) -> IO(Response()):
   Errors.on_error(render, next, req)
 
+# Hooks
+# -----
+#
+# Lifecycle hooks are middleware that take a plain function instead of
+# `next`. Their place in `use` or `Route.wrap` is their phase:
+#
+#   Air.use([
+#     Air.request_id,
+#     Air.on_response(record),        # onResponse: after, with the ms
+#     Air.on_send(stamp),             # onSend: may change the response
+#     Air.on_error(Air.Error.plain(env)),
+#     Air.on_fail(report)             # onError: sees the failure first
+#   ], base)
+#
+#   Air.Route.wrap(~Air.on_request(load_user), routes())   # preHandler
+#
+# `on_response` runs before the server writes: nothing after the write
+# reaches app code.
+
+# onRequest / preHandler: `f` may change the request the chain gets.
+def on_request(f: Request() -> IO(Request()), next: Handler(), req: Request()) -> IO(Response()):
+  Hooks.on_request(f, next, req)
+
+# onSend: `f` gets the request and the response and answers the one sent.
+def on_send(f: Request() -> Response() -> IO(Response()), next: Handler(), req: Request()) -> IO(Response()):
+  Hooks.on_send(f, next, req)
+
+# onResponse: `f` gets the request, the response and the milliseconds the
+# chain inside took; the response is unchanged.
+def on_response(f: Request() -> Response() -> Nat -> IO(Unit), next: Handler(), req: Request()) -> IO(Response()):
+  Hooks.on_response(f, next, req)
+
+# onError, to observe: `f` gets the request and the error of a failed
+# response, which goes on unchanged. Put it inside `on_error`.
+def on_fail(f: Request() -> Error() -> IO(Unit), next: Handler(), req: Request()) -> IO(Response()):
+  Hooks.on_fail(f, next, req)
+
 # Runs a fallible effect in a handler: its value goes to `k`, its failure
 # becomes a 500 whose detail is the message. Use it instead of `IO.try`,
 # which would end the process.
@@ -1199,6 +1262,275 @@ def Shield.with_frame(hs: Shield(), value: String) -> Shield():
 def Shield.with_header(hs: Shield(), name: String, value: String) -> Shield():
   Shield.with_header(hs, name, value)
 
+# OpenAPI
+# -------
+#
+# A route can say what it takes and answers; `Air.openapi` turns a route
+# list into an OpenAPI 3.1 document. `Api.body` and `Api.query` also
+# validate, so one schema checks the request and documents it:
+#
+#   Air.Api.summary("Create a task",
+#     Air.Api.returns(201, task(),
+#       Air.Api.body(new_task(), Air.Route.post("/tasks", create))))
+#
+# Path parameters come from the pattern. Serve the document from a route
+# outside the list it describes:
+#
+#   Air.Route.all([api(), [Air.Route.get("/openapi.json", Air.openapi("Tasks", "1.0.0", api()))]])
+
+# Validates the JSON body against `schema` and documents it.
+def Api.body(schema: Schema(), route: Route()) -> Route():
+  OpenApi.body(schema, route)
+
+# Validates the query against an object schema and documents each
+# property as a query parameter.
+def Api.query(schema: Schema(), route: Route()) -> Route():
+  OpenApi.query(schema, route)
+
+# Documents a JSON response with `status`.
+def Api.returns(status: U32, schema: Schema(), route: Route()) -> Route():
+  OpenApi.returns(status, schema, route)
+
+def Api.summary(text: String, route: Route()) -> Route():
+  OpenApi.summary(text, route)
+
+def Api.tag(name: String, route: Route()) -> Route():
+  OpenApi.tag(name, route)
+
+# The document for `routes`, as JSON.
+def Api.document(title: String, version: String, routes: List<Route()>) -> Json():
+  OpenApi.document(title, version, routes)
+
+# A handler answering the document for `routes`.
+def openapi(title: String, version: String, routes: List<Route()>, req: Request()) -> IO(Response()):
+  OpenApi.handler(title, version, routes, req)
+
+# Health
+# ------
+#
+# `Air.health()` is two routes, `GET /healthz` (200 while the process
+# serves) and `GET /readyz` (503 while the server drains or while a check
+# is down). Mount them with the app's routes:
+#
+#   Air.Route.all([Air.health(), routes()])
+#
+# When the stop switch flips, `/readyz` turns 503 at once. With a drain
+# delay (`Ready.delay`, or `AIR_DRAIN_DELAY` under `serve_env`) the
+# server keeps serving that long before it stops accepting, so a
+# balancer sees the 503 and moves traffic away first.
+
+def health() -> List<Route()>:
+  Health.routes()
+
+# Marks the check `name` down: `/readyz` answers 503 and lists it.
+def Ready.down(store: Store(), name: String) -> IO(Unit):
+  Health.down(store, name)
+
+def Ready.up(store: Store(), name: String) -> IO(Unit):
+  Health.up(store, name)
+
+# The same from a handler, through the request's store.
+def Ready.down_in(req: Request(), name: String) -> IO(Unit):
+  Health.down_in(req, name)
+
+def Ready.up_in(req: Request(), name: String) -> IO(Unit):
+  Health.up_in(req, name)
+
+# Milliseconds a stopping server keeps serving, `/readyz` answering 503,
+# before it stops accepting. 0, the default, stops at once.
+def Ready.delay(store: Store(), ms: U32) -> IO(Unit):
+  Health.delay(store, ms)
+
+# Metrics
+# -------
+#
+# `Air.metrics` counts requests by method, route pattern and status and
+# records how long each took, in the store. `Metrics.expose` answers
+# them in the Prometheus text format. Put the middleware in `use` and
+# the handler behind auth or on an internal path, since it names every
+# route:
+#
+#   Air.use([Air.metrics, Air.log, ...], base)
+#   Air.Route.mount("/admin", Air.Route.wrap(~auth("secret"), [Air.Route.get("/metrics", Air.Metrics.expose)]))
+
+def metrics(next: Handler(), req: Request()) -> IO(Response()):
+  Metric.metrics(next, req)
+
+def Metrics.expose(req: Request()) -> IO(Response()):
+  Metric.expose(req)
+
+# Adds one to the counter `app_<name>_total`. `name` must be
+# `[a-z0-9_]+`; any other name is ignored.
+def Metrics.count(req: Request(), name: String) -> IO(Unit):
+  Metric.count(req, name)
+
+# Tracing
+# -------
+#
+# `Air.trace(exporter)` continues the W3C trace a valid `traceparent`
+# names, or starts one, and hands one `Span` per sampled request to
+# `exporter`. Put it inside `request_id` and outside `log`, so the log
+# line carries the trace id:
+#
+#   Air.use([Air.request_id, Air.trace(Air.Trace.print), Air.log], base)
+#
+# Handlers read the ids as locals: `trace_id`, `span_id`, `parent_id`,
+# `trace_flags`, and `traceparent`, the value to send downstream.
+
+# A span: one request, or one an app builds for its own work. `start_ms`
+# is Unix epoch milliseconds as text, `parent_id` "" for a root.
+def Span() -> Data:
+  Trace.Span
+
+def Span.new(trace_id: String, span_id: String, parent_id: String, name: String, start_ms: String, duration_ms: U32, status: U32, method: String, route: String, path: String) -> Span():
+  Trace.Span{trace_id, span_id, parent_id, name, start_ms, duration_ms, status, method, route, path}
+
+def Span.trace_id(s: Span()) -> String:
+  match s:
+    case Trace.Span{trace_id, span_id, parent_id, name, start_ms, duration_ms, status, method, route, path}:
+      trace_id
+
+def Span.span_id(s: Span()) -> String:
+  match s:
+    case Trace.Span{trace_id, span_id, parent_id, name, start_ms, duration_ms, status, method, route, path}:
+      span_id
+
+def Span.parent_id(s: Span()) -> String:
+  match s:
+    case Trace.Span{trace_id, span_id, parent_id, name, start_ms, duration_ms, status, method, route, path}:
+      parent_id
+
+def Span.name(s: Span()) -> String:
+  match s:
+    case Trace.Span{trace_id, span_id, parent_id, name, start_ms, duration_ms, status, method, route, path}:
+      name
+
+def Span.start_ms(s: Span()) -> String:
+  match s:
+    case Trace.Span{trace_id, span_id, parent_id, name, start_ms, duration_ms, status, method, route, path}:
+      start_ms
+
+def Span.duration_ms(s: Span()) -> U32:
+  match s:
+    case Trace.Span{trace_id, span_id, parent_id, name, start_ms, duration_ms, status, method, route, path}:
+      duration_ms
+
+def Span.status(s: Span()) -> U32:
+  match s:
+    case Trace.Span{trace_id, span_id, parent_id, name, start_ms, duration_ms, status, method, route, path}:
+      status
+
+def Span.method(s: Span()) -> String:
+  match s:
+    case Trace.Span{trace_id, span_id, parent_id, name, start_ms, duration_ms, status, method, route, path}:
+      method
+
+def Span.route(s: Span()) -> String:
+  match s:
+    case Trace.Span{trace_id, span_id, parent_id, name, start_ms, duration_ms, status, method, route, path}:
+      route
+
+def Span.path(s: Span()) -> String:
+  match s:
+    case Trace.Span{trace_id, span_id, parent_id, name, start_ms, duration_ms, status, method, route, path}:
+      path
+
+def trace(exporter: Span() -> IO(Unit), next: Handler(), req: Request()) -> IO(Response()):
+  Trace.trace(exporter, next, req)
+
+# Keeps one new trace in `every`, decided by the trace id so services
+# that sample alike agree; a continued trace follows the caller's flag.
+def trace_sampled(every: U32, exporter: Span() -> IO(Unit), next: Handler(), req: Request()) -> IO(Response()):
+  Trace.trace_sampled(every, exporter, next, req)
+
+# The exporters that ship: one JSON line per span on stdout, with
+# OpenTelemetry attribute names, or nothing (ids are still propagated).
+def Trace.print(s: Span()) -> IO(Unit):
+  Trace.print(s)
+
+def Trace.drop(s: Span()) -> IO(Unit):
+  Trace.drop(s)
+
+def Trace.json(s: Span()) -> String:
+  Trace.json(s)
+
+# Milliseconds since the Unix epoch, as decimal text: a wall clock, where
+# `IO.now` counts from the process start.
+def Clock.wall_ms() -> IO(String):
+  Clock.wall_ms()
+
+# Config
+# ------
+#
+# Settings come from the environment first, then a `.env` file, then the
+# default in code. `serve_env` does it all for the server: `PORT`, the
+# `AIR_MAX_*` limits and the `AIR_TIMEOUT_*` timeouts, and the `.env` in
+# the working directory, installed so handlers can read it:
+#
+#   def main() -> IO(Unit):
+#     Air.serve_env(~app, 8080)
+#
+#   def greeting(req: Air.Request()) -> IO(Air.Response()):
+#     IO.bind(String, Air.Response(), Air.Config.get(req, "GREETING", "hi"),
+#       g => IO.pure(Air.Response(), Air.Response.text(g)))
+#
+# A number that is set but is not digits ends the process at startup with
+# the variable's name. Values of names containing SECRET, TOKEN, KEY or
+# PASSWORD are never printed.
+
+# The pairs of a `.env` file.
+def Config() -> Data:
+  Config.Config()
+
+# A variable, or `fallback` when it is unset or empty.
+def Config.env(name: String, fallback: String) -> IO(String):
+  Config.env(name, fallback)
+
+# A variable as a number, or `fallback`; ends the process on a bad value.
+def Config.u32(name: String, fallback: U32) -> IO(U32):
+  Config.u32(name, fallback)
+
+# `PORT`, or `fallback`; ends the process on a bad value.
+def Config.port(fallback: U32) -> IO(U32):
+  Config.port(fallback)
+
+# The pairs of the `.env` file at `path`, empty when there is none; a
+# line it cannot read is named and skipped.
+def Config.load(path: String) -> IO(Config()):
+  Config.load(path)
+
+# The pairs of a `.env` text.
+def Config.parse(text: String) -> Config():
+  Config.parse(text)
+
+# Puts a loaded config in the store, for `Config.get`.
+def Config.install(store: Store(), cfg: Config()) -> IO(Unit):
+  Config.install(store, cfg)
+
+# A setting in a handler: the environment's, else the installed
+# config's, else `fallback`.
+def Config.get(req: Request(), name: String, fallback: String) -> IO(String):
+  Config.get(req, name, fallback)
+
+# Limits from `AIR_MAX_HEAD`, `AIR_MAX_HEADERS`, `AIR_MAX_URL` and
+# `AIR_MAX_BODY`, each defaulting to `Limits.default()`'s.
+def Limits.from_env() -> IO(Limits()):
+  Config.limits()
+
+# Timeouts from `AIR_TIMEOUT_IDLE`, `_HEAD`, `_BODY`, `_APP`, `_SEND` and
+# `_DRAIN`, each defaulting to `Timeouts.default()`'s.
+def Timeouts.from_env() -> IO(Timeouts()):
+  Config.timeouts()
+
+# Serves `app` on `PORT` (or `port`) with limits, timeouts and `.env`
+# from the environment, until the process is killed.
+def serve_env(~app: Handler(), +port: U32) -> IO(Unit):
+  Config.serve(~app, port)
+
+# `serve_env` until `switch` is flipped, like `serve_until`.
+def serve_env_until(~app: Stoppable(), switch: Switch(), +port: U32) -> IO(Unit):
+  Config.serve_until(~app, switch, port)
+
 # Server
 # ------
 
@@ -1228,3 +1560,63 @@ def serve_shared(~app: Stoppable(), +limits: Limits(), +timeouts: Timeouts(), +s
 # Ends the process with `code`, whatever computations are still parked.
 def exit(code: U32) -> IO(Unit):
   IO.die(Unit, code, "")
+
+# Testing
+# -------
+#
+# Runs an app in-process, without a socket. `inject` takes raw HTTP text,
+# reads it as the server would (a refused head gives the refusal the
+# server would send), runs the app with a fresh store and settles the
+# response as the server does before writing. Timeouts, keep-alive and
+# 100-continue are not simulated. A test is a program:
+#
+#   import ../examples/hello/app.bend as Hello
+#
+#   def main() -> IO(Unit):
+#     do IO<Unit>:
+#       res : Air.Response() <- Air.Test.inject(Hello.app, Air.Test.get("/hello/ada"))
+#       a : Bool <- Air.Test.expect("greets", Air.Response.body(res), "Olá, ada!")
+#       b : Bool <- Air.Test.expect_u32("200", Air.Response.status(res), 200)
+#       Air.Test.finish([a, b])
+#
+# `finish` ends the process with code 1 when a check failed.
+
+# A GET for `target` ("/path?query") with a `host` header.
+def Test.get(target: String) -> String:
+  Test.get(target)
+
+# A POST of `body` with its content type and length.
+def Test.post(target: String, content_type: String, body: String) -> String:
+  Test.post(target, content_type, body)
+
+# `raw` with one more header line.
+def Test.with_header(name: String, value: String, raw: String) -> String:
+  Test.with_header(name, value, raw)
+
+# Runs `app` on `raw` with a fresh store.
+def Test.inject(app: Handler(), raw: String) -> IO(Response()):
+  Test.inject(app, raw)
+
+# Runs `app` on `raw` with `store`, which carries state across requests.
+def Test.inject_shared(app: Handler(), store: Store(), raw: String) -> IO(Response()):
+  Test.inject_shared(app, store, raw)
+
+# The body as a client reads it; a stream is read until it closes.
+def Test.body(res: Response()) -> IO(String):
+  Test.body(res)
+
+# Prints `ok - name` or `not ok - name: want … got …`; answers whether
+# it passed.
+def Test.expect(name: String, got: String, want: String) -> IO(Bool):
+  Test.expect(name, got, want)
+
+def Test.expect_u32(name: String, got: U32, want: U32) -> IO(Bool):
+  Test.expect_u32(name, got, want)
+
+# A condition, with a note printed when it fails.
+def Test.expect_true(name: String, ok: Bool, note: String) -> IO(Bool):
+  Test.expect_true(name, ok, note)
+
+# Prints the tally; exits 1 when any check failed.
+def Test.finish(results: List<&2, Bool>) -> IO(Unit):
+  Test.finish(results)

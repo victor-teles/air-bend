@@ -1,0 +1,119 @@
+---
+title: Configuration
+description: Port, limits, timeouts and app settings from the environment and a .env file.
+---
+
+`Air.serve_env` takes everything the server needs from the environment:
+
+```python
+def main() -> IO(Unit):
+  Air.serve_env(~app, 8080)
+```
+
+```
+PORT=9090 AIR_MAX_BODY=10485760 bend main.bend
+```
+
+It serves on `PORT`, or on the port in code when `PORT` is unset. It
+reads the limits and timeouts below, and loads a `.env` file from the
+working directory. `Air.serve_env_until(~app, switch, 8080)` does the
+same for an app that takes the stop switch, like `serve_until`.
+
+## Precedence
+
+For every setting, the first of these wins:
+
+1. the process environment;
+2. the `.env` file;
+3. the default in code.
+
+Bend can read one environment variable at a time but cannot list or set
+them. So a `.env` file never changes the environment: it is loaded into
+a map, and every lookup asks the environment first.
+
+## Server settings
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PORT` | the port passed to `serve_env` | 1 to 65535 |
+| `AIR_MAX_HEAD` | 16384 | bytes of request line and headers; over it, 431 |
+| `AIR_MAX_HEADERS` | 100 | header lines; over it, 431 |
+| `AIR_MAX_URL` | 8192 | bytes of URL; over it, 414 |
+| `AIR_MAX_BODY` | 1048576 | bytes of body; over it, 413 |
+| `AIR_TIMEOUT_IDLE` | 15000 | ms to wait for a request on an open connection |
+| `AIR_TIMEOUT_HEAD` | 10000 | ms for the request line and headers |
+| `AIR_TIMEOUT_BODY` | 30000 | ms for the body |
+| `AIR_TIMEOUT_APP` | 30000 | ms for the handler; over it, 503 |
+| `AIR_TIMEOUT_SEND` | 30000 | ms to write the response, or each streamed piece |
+| `AIR_TIMEOUT_DRAIN` | 10000 | ms a stopping server waits for requests in flight |
+| `AIR_DRAIN_DELAY` | 0 | ms a stopping server keeps serving, `/readyz` answering 503, before it stops accepting (see [Health](/docs/guides/health)) |
+| `AIR_ENV` | prod | `dev` shows error details (see [Errors](/docs/guides/errors)) |
+
+A timeout of 0 means no limit. An unset or empty variable takes its
+default. A variable that is set but is not a number stops the process
+before it listens, with the variable's name:
+
+```
+air: config: AIR_MAX_BODY is not a number: "1e3"
+air: config is invalid
+```
+
+`Air.Limits.from_env()` and `Air.Timeouts.from_env()` give the same
+values to a `main` that calls `serve_until` or `serve_shared` itself.
+
+## The `.env` file
+
+```
+# comments and blank lines are skipped
+DATABASE_URL=postgres://localhost/app
+export GREETING="Hello there"
+TAGLINE='single quotes work too'
+```
+
+Each line is `KEY=VALUE`. A leading `export ` is dropped, the key and
+value are trimmed, and one pair of surrounding quotes comes off the
+value. The first `=` splits, so a value may contain `=`. There are no
+escapes and no `${VAR}` expansion. A later line wins over an earlier
+one. A line Air cannot read is named and skipped:
+
+```
+air: .env:3: ignored
+```
+
+A missing file is no error. Keep `.env` out of version control; the
+repository's `.gitignore` already does.
+
+## Reading settings in a handler
+
+```python
+def greeting.fin(g: String) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text(g))
+
+def greeting(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(String, Air.Response(), Air.Config.get(req, "GREETING", "hi"), greeting.fin)
+```
+
+`Air.Config.get(req, name, fallback)` answers the environment's value,
+else the `.env` file's, else `fallback`. The app is a closed template,
+so a value loaded in `main` cannot be passed into it. `serve_env`
+installs the file's pairs in the store (namespace `config`), which
+every request carries. Each lookup reads one variable and takes the
+store's lock once. Read settings you need on every request once, not
+in a loop.
+
+With `serve_shared`, do the same by hand:
+
+```python
+cfg : Air.Config() <- Air.Config.load(".env")
+Air.Config.install(store, cfg)
+```
+
+In `main`, `Air.Config.env(name, fallback)` reads a string and
+`Air.Config.u32(name, fallback)` a number, failing fast like the server
+settings.
+
+## Secrets
+
+A value is never printed when its name contains `SECRET`, `TOKEN`,
+`KEY` or `PASSWORD`, in any case. An error names the variable and shows
+`<hidden>` instead of the value.

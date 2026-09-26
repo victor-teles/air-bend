@@ -31,6 +31,16 @@ before any commit, and update your row when done.
 | 017  | Schema values; validate body, query, params | P2 | M | — | DONE (2026-09-22; 14 laws; live on the native dashboard: valid POST 201; `{"title":5,"extra":1}` 422 with three errors in document order; `nope` and a text/plain body 400 via `on_error`; `?limit=abc` 422, `?limit=2` two tasks, none all seven; 422 keeps shield and request-id headers. The checker walks a work list with fuel, since Bend forbids mutual recursion; `optional` is an `SOpt` wrapper so one recursive type suffices) |
 | 018  | Mustache-style HTML templates over a JSON context | P2 | M | — | DONE (2026-09-22; 15 laws; live on native hello: `/page/Ada%20%3Cx%3E` escaped heading and three items, `/empty` the empty state; a 10,000-item section rendered natively to 128,890 bytes without a stack overflow. The checker's termination rule, that the first changed argument must shrink, forced `find_frame` and `walk` to take the list first) |
 
+| 019  | Test injection: run an app on raw HTTP text without a socket; `tests/` | P1 | M | — | DONE (2026-09-22; 11 laws, incl. `refusal_unchanged` proving the server's refusal bytes did not move; `tests/hello.bend` 15/15 and `tests/dashboard.bend` 7/7, a flipped expectation prints `not ok` and exits 1; both examples split into `app.bend` + `main.bend` as a pure move, native-build, and serve (checked on port 18080 because 8080 was taken locally); docs build passes with the new Testing page. Cost note for 020: under `bend tests/hello.bend` the JS runner takes ~25 s to start the hello app, while a native test binary (`bend tests/hello.bend -o t && ./t`) runs in 5.5 s, most of it the SSE check's sleeps) |
+| 020  | CI: proof, tests, native builds, docs build, A/B bench gate vs `main` | P2 | M | 019 | DONE locally, **workflow unverified on GitHub: not authorized to push** (2026-09-23; `.github/workflows/ci.yml` + `.github/actions/setup-bend` pin Bend 2.0.19 by sha256 from GitHub releases (the installer only carries the latest version's hashes) and install clang-19, which `bend -o` needs; `bench/build.sh` swaps hello's port in a copy of `main.bend`, so any checkout builds on a free port (8080 was taken locally); `bench/ab.sh` alternates base/head, default 5 rounds after 3 rounds once strayed 13% on the same binary; `bench/compare.mjs` fails under 0.85: same binary 0.986-1.019 at 5 rounds, a 4 KB-header hello 0.141/0.345 → exit 1, exit 0 with `BENCH_ACCEPTED=true`, this branch vs `main` 0.921/1.093. Rehearsed on Ubuntu 24.04 in Docker: x64 under emulation verified the pinned download and clang 19.1.1 but Bend (a Bun binary) needs AVX the emulator lacks; linux-arm64 Bend 2.0.19 ran the proof (29 s), native example builds and both native test suites (15/15, 7/7). The rehearsal caught `bend -o` not creating `bench/out/`, fixed in the `native` job. Not run: the jobs on GitHub's x64 runners, the runner's same-binary noise, the `docs` job outside this machine) |
+| 021  | Config from env and `.env`; `Limits`/`Timeouts.from_env`; `serve_env` | P2 | S | — | DONE (2026-09-23; 11 laws (a deliberately broken one failed, so they are evaluated); `tests/hello.bend` 17/17 with the default greeting and an installed `.env` value; live on hello: `PORT=18080` serves, `.env` reaches `/config/greeting` and its bad line 3 is named, `GREETING` in the env beats `.env`, `AIR_MAX_BODY=10` gives 200 for 10 bytes and 413 for 11, `AIR_MAX_BODY=1e3`, `PORT=70000` and `AIR_TIMEOUT_APP=soon` each exit 1 naming the variable; native dashboard on `PORT=18090` served and its shutdown route stopped it through `serve_env_until`; both examples native-build; docs build. Beyond the plan: `serve_env_until` for apps that take the switch, `Config.parse` exported for tests, `PORT` range-checked. Found: `.gitignore` had no final newline, so appending made `**/out/.env`; rewritten as two lines) |
+| 022  | Lifecycle hooks as named middleware; plugins documented as route groups | P2 | S | — | DONE (2026-09-23; `air/lib/hooks.bend`: `on_request`, `on_send`, `on_response`, `on_fail`; 3 laws, since chains of `IO.pure` do normalize under `==` (a wrong header made the law fail, so it is compared); `on_response` reads the clock, so tests cover it; `tests/hello.bend` 22/22 with 5 hook checks; live on native hello: `/hooks/ok` and the rendered 500 of `/hooks/boom` both carry `x-hooked`, `/hooks/stats` answers `2xx=1 5xx=1`, `/admin/area` reads the preHandler local; docs build with `hooks.mdx` and `plugins.mdx`, and their code compiled and ran in a scratch program. The hooks wrap a `/hooks` group in hello, not the app, so the bench route pays no store lock. The first draft of the guide's `load_user` lacked `+req = req` and did not check; fixed) |
+| 023  | `/healthz` and `/readyz`; draining flag and pre-stop delay; app checks | P2 | S | — | DONE (2026-09-23; `air/lib/health.bend` + the stopper in `server.bend` marks `air/draining`, then sleeps `air/drain_delay` ms before closing the gate; `AIR_DRAIN_DELAY` read by `serve_env`; 8 laws; `tests/hello.bend` 26/26 with 4 health checks; live on the native dashboard with `AIR_DRAIN_DELAY=3000`: `/readyz` 503 `draining` at +0.5 s, `/api/tasks` still 200 at +1.5 s, no connection at +4 s, `air: draining for 3000 ms` then `air: stopped`; with no delay the log and timing are as before (no connection at +0.5 s); native hello: `/admin/demo/down` → `/readyz` 503 listing `demo`, `/admin/demo/up` → 200, HEAD 200; both examples native-build; docs build. The guide's first draft of "probes out of logs" used a `GET /*rest` catch-all that would have made every POST a 405; replaced by `Route.wrap(~Air.log, app_routes())`) |
+| 024  | Route notes; `Air.Api.*` validate-and-document; OpenAPI 3.1 document | P2 | L | 017 | DONE (2026-09-23; `Router.Route` gained `notes`, and `schema.bend` no longer imports the router (it only needed the `Handler` type), so the router can hold schemas; all old router laws pass unchanged; A/B of hello before and after the field: GET 0.997, POST 0.968 (5 rounds, spreads 4-10%); `air/lib/openapi.bend` with 13 laws incl. a whole-document law and two dispatch laws proving `Api.body` still validates (a deliberately wrong status failed); `tests/dashboard.bend` 8/8, `tests/hello.bend` 26/26; live on the native dashboard: `/openapi.json` 2205 bytes, valid POST 201, `{"title":5}` and `?limit=abc` 422; Redocly lint of the live document: valid under both the spec and recommended rulesets, 6 `security-defined` warnings (no auth schemes). Beyond the plan: `operationId` per operation (client generators need it) and `servers: [{url: "/"}]`, both added after the first lint. Roadmap's type-inference line marked rejected with the reason) |
+| 025  | Prometheus metrics by method, route pattern, status; latency histogram | P2 | M | 024 | DONE (2026-09-24; the router leaves `air-route` (the pattern as written, mount prefix included) on hit and fallback responses, and `Response.settle` removes it; `air/lib/metrics.bend` with `observe`/`expose_text`, the `metrics` middleware, `expose` and `count`; 24 new laws (10 route-label, 14 metrics; a deliberately wrong one of each kind failed); the two `oa_body_*` dispatch laws now expect the label; `tests/hello.bend` 29/29 (air-route stripped, 401 without token, three hits and a miss scraped), `tests/dashboard.bend` 8/8; A/B with 7 rounds: annotation alone GET 0.987 / POST 0.995, `Air.metrics` in hello's stack GET 0.861 / POST 0.956 (both under the STOP lines of 3% and 20%, but the two together reach ~0.85 of the tree before 025 on GET, the CI gate's edge); live on native hello: no `air-route` on any response, `BREW` labelled `OTHER`, HEAD labelled with the GET route; promtool not installed and Docker not running, so the live exposition was parsed with `prometheus_client`'s parser (buckets cumulative, `+Inf` = `_count`); both examples native-build; docs build with `metrics.mdx`. Beyond the plan: the sum is kept as whole seconds plus remaining ms, so it does not wrap after 49 days of summed latency; the facade imports the module as `Metric` so `Air.Metrics.*` does not collide with the alias) |
+| 026  | W3C trace context, span exporter hook, wall-clock effect | P3 | M | 025 | DONE with a STOP condition reported (2026-09-24): **starting a trace costs ~34% of hello's GET throughput (6 random draws), past the 30% line. Cheaper ids are the operator's call.** Continuing a trace costs ~15%, and `Trace.drop` still ~30% on start, so the draws dominate (A/B spreads 20-70% on a noisy machine; steady rounds in `bench/README.md`). Delivered: `Clock.wall_ms` effect (`air/lib/effs/wall_ms.{c,js}`; C symbols come from the bare def name) checked against the system clock under `bend file.bend` and a native build; `air/lib/trace.bend` (parse/render/sampling/span JSON), `Random.span_id`; `Air.log` `ts` is epoch ms, plus `trace_id` when traced; 15 new laws (a flipped one failed); `tests/hello.bend` 32/32 with continued/new/invalid header cases, `tests/dashboard.bend` 8/8; live on native hello: continued trace keeps the id with parent `00f067aa0ba902b7`, no header and an all-zero trace start fresh roots, flags `00` logs the trace id but exports no span, a 404's span is named `GET`; both examples native-build; guides `tracing.mdx`, logging `ts`, not-yet OTLP. OTLP export is out of scope: a collector can tail the JSON lines. Beyond the plan: `Air.Span.new` and accessors, `Air.Trace.json`, and `HEADER` in `bench/ab.sh`/`bench.mjs`) |
+| 027  | Streaming backpressure measured under a slow client; `Stream.with_room` | P3 | S | — | DONE (2026-09-24; no STOP condition hit and no server change. Native hello `/admin/flood` (behind auth) streams 20,000 fresh 16 KiB pieces to `curl --limit-rate 1M`. RSS was flat over 20 s: room 8 at 7.3-8.0 MB, room 64 at 28.7-29.5 MB, idle 3.2 MB. The producer sent 1414/1477 pieces, about 70/s, at the client's pace. A killed client released the producer in 0.03 s. A client that never reads got `air: timeout: stream` and the producer was released 36.5 s after the request. Finding: a 16 KiB piece costs about 390 KB in memory (a Bend string is a list of characters), which the guide states. The first run used one shared piece string and hid the window's cost (both windows about 3 MB), so the demo builds a new piece per send. `Air.Stream.with_room(n)` (at least 1); `tests/hello.bend` 33/33 with a room-1 stream of 100 pieces arriving whole; new `streaming.mdx` (SSE, window, piece size, disconnect); bench entry with both RSS series; both examples native-build; docs build; proof passes (no laws, since IO cannot be law-checked, per the plan)) |
+
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
 ## Dependency notes
@@ -56,6 +66,17 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   change, before or after 012/017/018 but not interleaved with them. 016
   needs 014's random ids. 012, 014, 017 and 018 are independent of each
   other. Suggested order: 013, 012, 014, 015, 016, 017, 018.
+
+- Tier 6 (planned 2026-09-22 at `cea6656`): 019 first. Its test
+  programs are the evidence format for every later plan and what 020's
+  CI runs. 020 right after, so the bench gate guards 024 and 025 (both
+  touch the hot path). 021, 022, 023 and 027 are independent of each
+  other. 024 before 025: both change `router.bend` (024 the `Route`
+  constructor, 025 the pick and `run`); do not interleave them. 026
+  needs 025's `Air.Response.route` for span names. Several plans touch
+  `server.bend` in small places (019 `refuse.go`, 021 none, 023 the
+  stopper), so rebase rather than merge in parallel. Suggested order:
+  019, 020, 021, 022, 023, 024, 025, 026, 027.
 
 ## Roadmap Tier 2 coverage
 
@@ -121,6 +142,21 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 | Schema validation hooks (params/query/body/response) | 017 (body, query, params; response validation rejected) |
 | Template/view rendering | 018 (`Air.View.render`, `Air.Response.view`; Mustache subset over `Json`) |
 | WebSocket upgrade handling | rejected, see below |
+
+## Roadmap Tier 6 coverage
+
+| Roadmap item | Plan |
+|---|---|
+| Type inference from route definitions (TS) | rejected, see below; 024's OpenAPI document is the exportable contract |
+| Plugin/extension system with encapsulation rules | 022 (plugins are route groups: `wrap` and `mount` scope them; guide) |
+| Testing helper: inject a request without a socket | 019 |
+| OpenAPI generation from route schemas | 024 |
+| Lifecycle hooks (onRequest, preHandler, onSend, onResponse, onError) | 022 (`on_request`, `on_send`, `on_response`, `on_fail`; after-write rejected) |
+| Config + env handling | 021 |
+| Metrics + OpenTelemetry tracing hooks | 025 (metrics), 026 (trace context and exporter hook; OTLP export deferred) |
+| Health/readiness endpoints | 023 |
+| Benchmark suite in CI | 020 |
+| Backpressure on streaming responses | 027 (already present by construction; measured and made configurable) |
 
 ## Findings considered and rejected
 
@@ -224,4 +260,31 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   burst at window edges matters to an app.
 - Template cache (plan 018): no globals, and the store holds strings; a
   per-request `Disk.read` is fast enough for now.
-
+- Type inference from route definitions (Tier 6): the roadmap line is
+  TypeScript's (inferring `params`/`body` types from a path string).
+  Bend already type-checks every handler, middleware and response
+  statically. What it cannot do is derive a record type from a pattern
+  string or a `Schema` value, so `Request.param(req, "id")` stays a
+  `String` lookup. 024's OpenAPI document gives clients generated types
+  instead. Revisit if Bend gains type-level string computation.
+- After-write `onResponse` (plan 022): the server owns the socket and has
+  no callback registry (the Tier 4 decision above), so `on_response` runs
+  after the app and before the write. A write failure is invisible to
+  app code.
+- Plugin registry and `decorate` (plan 022): a plugin is a def returning
+  `List<Route>`, and locals and store namespaces replace decorators. An
+  open `Request` record would be needed for real decoration.
+- OTLP export over the network (plan 026): needs an HTTP client over
+  `TCP.connect`, batching and retries, plus a spawned exporter task so
+  requests never wait. Spans ship as JSON lines, which a collector can
+  tail.
+- In-flight requests gauge (plan 025): the drain tally lives in the
+  server's context, not on the request. Revisit with more server state
+  in the store (023 starts that with `air`/`draining`).
+- Route label for metrics via a router local or `Route.wrap` (plan 025):
+  a local is invisible outside dispatch, and a wrap misses 404/405. The
+  router annotates the response with an internal `air-route` header that
+  `settle` strips instead.
+- A seventh `Timeouts` field for the pre-stop delay (plan 023): it would
+  break `Air.Timeouts.new`'s six arguments. The delay is a store key
+  (`air`/`drain_delay`) set by `Air.Ready.delay`.

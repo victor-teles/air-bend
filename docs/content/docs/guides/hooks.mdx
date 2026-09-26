@@ -1,0 +1,72 @@
+---
+title: Lifecycle hooks
+description: onRequest, preHandler, onSend, onResponse and onError, as middleware with a name.
+---
+
+Air has no hook registry. A hook is a [middleware](/docs/guides/middleware)
+that takes a plain function instead of `next`, so it cannot forget to
+call the rest of the chain or call it twice. Where you put it in
+`Air.use` or `Air.Route.wrap` decides when it runs.
+
+| Air | Fastify | `f` takes | Runs |
+| --- | --- | --- | --- |
+| `Air.on_request(f)` in `use` | onRequest | the request, answers a request | before routing |
+| `Air.on_request(f)` in `Route.wrap` | preHandler | the same, with params bound | after routing, before the handler |
+| `Air.on_send(f)` | onSend | the request and the response, answers a response | after the handler; its answer is sent |
+| `Air.on_response(f)` | onResponse | the request, the response and the milliseconds | after the handler; the response is unchanged |
+| `Air.on_fail(f)` | onError | the request and the error | when the response is a failure; it goes on unchanged |
+
+```python
+def stamp(req: Air.Request(), res: Air.Response()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.with_header(res, "x-served-by", "air"))
+
+def record(req: Air.Request(), res: Air.Response(), ms: Nat) -> IO(Unit):
+  IO.print(Nat.show(ms) ++ " ms")
+
+def report(req: Air.Request(), e: Air.Error()) -> IO(Unit):
+  IO.print("failed: " ++ U32.show(Air.Error.status(e)))
+
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.use([
+    Air.request_id,
+    Air.on_response(record),
+    Air.on_send(stamp),
+    Air.on_error(Air.Error.plain(Air.Env.prod())),
+    Air.on_fail(report)
+  ], base)(req)
+```
+
+The first in the list runs first on the way in and last on the way out,
+so the order above matters in two places:
+
+- `on_fail` sits inside `on_error`, so it sees the failure before
+  `on_error` renders it into a page.
+- `on_send` sits outside `on_error`, so it sees the rendered response.
+  A header it adds to a failure also survives `on_error`, whichever
+  side it is on, because a rendered error keeps the failure's headers.
+
+A preHandler goes on a group:
+
+```python
+def load_user(req: Air.Request()) -> IO(Air.Request()):
+  +req = req
+  IO.pure(Air.Request(), Air.Request.with_local(req, "user", Air.Request.param(req, "id")))
+
+Air.Route.wrap(~Air.on_request(load_user), user_routes())
+```
+
+## What there is not
+
+- **After the write.** The server owns the socket, so app code runs
+  before the response is written. `on_response` runs when the app has
+  its response, and a write that fails is never seen.
+- **Answering early.** `on_request` cannot answer on its own. A hook
+  that must, such as an auth check, is an ordinary middleware that
+  does not call `next`.
+- **A registry.** Functions cannot be copied in Bend, so a list of
+  callbacks consulted per request would not work. The onion needs none,
+  and the checker sees that each `next` runs at most once.
+
+A hook that writes the store takes its lock once per request. Put hooks
+on the groups that need them, as `examples/hello` does with its `/hooks`
+routes, rather than on the whole app.

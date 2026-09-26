@@ -2,7 +2,6 @@ import Base
 import ./text.bend as Text
 import ./json.bend as Json
 import ./http.bend as Http
-import ./router.bend as Router
 
 # Schema
 # ======
@@ -360,14 +359,14 @@ def unprocessable(errs: List<&2, String>) -> Http.Response:
 # Middleware
 # ----------
 
-def verdict(next: Router.Handler(), req: Http.Request, errs: List<&2, String>) -> IO(Http.Response):
+def verdict(next: (Http.Request -> IO(Http.Response)), req: Http.Request, errs: List<&2, String>) -> IO(Http.Response):
   match errs:
     case Nil{}:
       next(req)
     case Con{h, t}:
       IO.pure(Http.Response, unprocessable(Con{h, t}))
 
-def validate_json.go(s: Schema, next: Router.Handler(), req: Http.Request, body: Maybe<&2, Json.Value>) -> IO(Http.Response):
+def validate_json.go(s: Schema, next: (Http.Request -> IO(Http.Response)), req: Http.Request, body: Maybe<&2, Json.Value>) -> IO(Http.Response):
   match body:
     case None{}:
       IO.pure(Http.Response, Http.Response.fail(Http.BadRequest{"body is not JSON"}))
@@ -376,16 +375,16 @@ def validate_json.go(s: Schema, next: Router.Handler(), req: Http.Request, body:
 
 # The body must be JSON (by content type, and parse) matching `s`: else
 # 400 through `on_error`, or 422 with the list.
-def validate_json(s: Schema, next: Router.Handler(), req: Http.Request) -> IO(Http.Response):
+def validate_json(s: Schema, next: (Http.Request -> IO(Http.Response)), req: Http.Request) -> IO(Http.Response):
   +req = req
   validate_json.go(s, next, req, Http.Request.json(req))
 
 # The query string, leniently, against an object schema.
-def validate_query(s: Schema, next: Router.Handler(), req: Http.Request) -> IO(Http.Response):
+def validate_query(s: Schema, next: (Http.Request -> IO(Http.Response)), req: Http.Request) -> IO(Http.Response):
   +req = req
   verdict(next, req, check_strings(s, Http.Request.query_map(req)))
 
 # The path params, leniently, against an object schema.
-def validate_params(s: Schema, next: Router.Handler(), req: Http.Request) -> IO(Http.Response):
+def validate_params(s: Schema, next: (Http.Request -> IO(Http.Response)), req: Http.Request) -> IO(Http.Response):
   +req = req
   verdict(next, req, check_strings(s, Http.Request.params(req)))

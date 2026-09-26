@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proof:
+    name: Proof (bend PROOF.bend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bend
+        with:
+          clang: "false"
+      - name: Prove the laws
+        run: bend PROOF.bend | tee proof.log && grep -q "All terms check." proof.log
+
+  tests:
+    name: Tests (tests/*.bend, native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bend
+      # Built natively: under `bend file.bend` the apps take ~25 s to start.
+      - name: Build the tests
+        run: |
+          mkdir -p bench/out
+          for t in tests/*.bend; do bend "$t" -o "bench/out/test-$(basename "$t" .bend)"; done
+      - name: Run tests/hello.bend
+        run: bench/out/test-hello
+      - name: Run tests/dashboard.bend
+        run: bench/out/test-dashboard
+
+  native:
+    name: Native builds (examples)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bend
+      # The C backend refuses two defs whose names mangle alike; only a
+      # native build shows it.
+      # `bend -o` does not create the output directory.
+      - name: Build examples/hello
+        run: mkdir -p bench/out && bend examples/hello/main.bend -o bench/out/hello
+      - name: Build examples/dashboard
+        run: bend examples/dashboard/main.bend -o bench/out/dashboard
+
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: docs/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+  bench:
+    name: Benchmark (head vs base)
+    if: github.event_name == 'pull_request'
+    needs: native
+    runs-on: ubuntu-latest
+    env:
+      BENCH_ACCEPTED: ${{ contains(github.event.pull_request.labels.*.name, 'bench-accepted') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/setup-bend
+      - name: Check out the base branch
+        run: git worktree add ../base "origin/${{ github.base_ref }}"
+      - name: Build base and head
+        run: |
+          bench/build.sh ../base bench/out/hello-base
+          bench/build.sh . bench/out/hello-head
+      # Base and head alternate on this runner, so the runner's speed
+      # cancels out; see bench/README.md.
+      - name: Run the A/B
+        run: bench/ab.sh bench/out/hello-base bench/out/hello-head
+      - name: Compare
+        run: node bench/compare.mjs bench/out/ab.jsonl
+      - name: Keep the raw numbers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-ab
+          path: bench/out/*.jsonl

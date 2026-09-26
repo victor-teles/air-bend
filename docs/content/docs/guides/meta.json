@@ -1,15 +1,24 @@
 {
   "title": "Guides",
   "pages": [
+    "configuration",
+    "health",
+    "metrics",
+    "tracing",
     "middleware",
+    "hooks",
+    "plugins",
     "request-ids-and-logging",
     "shared-state",
     "sessions",
     "rate-limiting",
     "validation",
+    "openapi",
     "templates",
+    "streaming",
     "static-files",
     "cors-and-security-headers",
-    "errors"
+    "errors",
+    "testing"
   ]
 }

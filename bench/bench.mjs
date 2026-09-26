@@ -1,10 +1,11 @@
 // Load generator for Air. No dependencies.
 //
-//   node bench/bench.mjs [--url http://localhost:8080/] [--conns 64] [--seconds 10] [--method GET] [--body TEXT] [--close]
+//   node bench/bench.mjs [--url http://localhost:8080/] [--conns 64] [--seconds 10] [--method GET] [--body TEXT] [--close] [--json]
 //
 // Opens `conns` clients that each fire requests back to back for `seconds`,
 // then prints throughput, latency percentiles and errors. Connections are
-// kept alive and reused; `--close` opens one per request instead.
+// kept alive and reused; `--close` opens one per request instead. `--json`
+// prints one JSON object instead of the text, for scripts.
 
 import http from "node:http";
 import { performance } from "node:perf_hooks";
@@ -17,7 +18,10 @@ const conns = Number(args.conns ?? 64);
 const seconds = Number(args.seconds ?? 10);
 const method = (args.method ?? "GET").toUpperCase();
 const body = args.body ?? null;
+// `--header "name: value"` adds one request header, e.g. a traceparent.
+const extra = args.header ? Object.fromEntries([args.header.split(/:\s*/, 2)]) : {};
 const close = process.argv.includes("--close");
+const json = process.argv.includes("--json");
 
 const agent = new http.Agent({ keepAlive: !close, maxSockets: close ? Infinity : conns });
 
@@ -32,7 +36,7 @@ function once() {
     const t0 = performance.now();
     const req = http.request(
       { hostname: url.hostname, port: url.port, path: url.pathname + url.search, method, agent,
-        headers: { ...(close ? { connection: "close" } : {}),
+        headers: { ...extra, ...(close ? { connection: "close" } : {}),
                    ...(body ? { "content-type": "text/plain", "content-length": Buffer.byteLength(body) } : {}) } },
       (res) => {
         res.on("data", (c) => (bytes += c.length));
@@ -63,6 +67,18 @@ const elapsed = (performance.now() - start) / 1000;
 
 latencies.sort((a, b) => a - b);
 const total = latencies.length;
+if (json) {
+  console.log(JSON.stringify({
+    target: `${method} ${url.pathname}`,
+    rps: Number((total / elapsed).toFixed(1)),
+    requests: total,
+    errors,
+    p50: total ? Number(pct(latencies, 50).toFixed(3)) : null,
+    p99: total ? Number(pct(latencies, 99).toFixed(3)) : null,
+    statuses: Object.fromEntries(statuses),
+  }));
+  process.exit(0);
+}
 console.log(`target      ${method} ${url}`);
 console.log(`connections ${conns}   duration ${elapsed.toFixed(1)}s`);
 console.log(`requests    ${total}   errors ${errors}`);

@@ -11,10 +11,13 @@ read it with `Air.Request.id`. `Air.log`, placed inside it, prints one
 JSON line per request:
 
 ```json
-{"ts":5161,"id":"a9bf17ed00001429","method":"GET","path":"/","status":200,"ms":1}
+{"ts":1790298403006,"id":"a9bf17ed00001429","method":"GET","path":"/","status":200,"ms":1}
 ```
 
-`ts` counts milliseconds since the process started: Bend has no wall
-clock, so a log shipper adds the date. The server prints its own line
+`ts` is the time the request started, in milliseconds since the Unix
+epoch. It comes from Air's wall clock, `Air.Clock.wall_ms()`. Before
+Air had a wall clock, `ts` counted milliseconds since the process
+started. With [`Air.trace`](/docs/guides/tracing) outside `log`, the
+line also has a `"trace_id"` field after `"id"`. The server prints its own line
 only for what the app never sees: a bad request line, a limit, the 503
 on a timeout.

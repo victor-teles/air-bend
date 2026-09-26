@@ -1,0 +1,74 @@
+---
+title: Plugins
+description: Package routes, middleware and state as a group that stays in its own scope.
+---
+
+A plugin is a def that returns routes:
+
+```python
+def status_plugin(+prefix: String) -> List<Air.Route()>:
+  Air.Route.mount(prefix, Air.Route.wrap(~Air.on_send(no_cache), [
+    Air.Route.get("/", status),
+    Air.Route.get("/visits", visits)
+  ]))
+```
+
+An app puts plugins together with `Air.Route.all`:
+
+```python
+def routes() -> List<Air.Route()>:
+  Air.Route.all([
+    app_routes(),
+    status_plugin("/status"),
+    admin_plugin()
+  ])
+```
+
+## Encapsulation
+
+The rules follow from how routes work, with no plugin machinery:
+
+1. **Middleware stays in the plugin.** `Air.Route.wrap(~mw, routes)`
+   wraps those routes only. A hook or an auth check inside a plugin
+   never runs for the app's other routes.
+2. **Paths stay under a prefix.** `Air.Route.mount(prefix, routes)`
+   puts every route of the plugin under `prefix`. Take the prefix as an
+   argument so the app decides where the plugin lives.
+3. **State goes in its own namespace.** The store is shared, so name
+   the namespace after the plugin:
+   `Air.Store.incr(req, "status_plugin", "visits")`.
+4. **Locals are prefixed.** A local the plugin sets for its handlers is
+   named `status_plugin.user`, not `user`.
+5. **Collisions fail at startup.** `Air.Route.check(routes())` in `main`
+   ends the process when two plugins register the same method and path.
+
+There is no `decorate`. A plugin shares values with its handlers through
+locals and the store.
+
+## A complete plugin
+
+```python
+def no_cache(req: Air.Request(), res: Air.Response()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.with_header(res, "cache-control", "no-store"))
+
+def status(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.json("{\"status\":\"ok\"}"))
+
+def visits.fin(n: U32) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text(U32.show(n)))
+
+def visits(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(U32, Air.Response(), Air.Store.incr(req, "status_plugin", "visits"), visits.fin)
+
+def status_plugin(+prefix: String) -> List<Air.Route()>:
+  Air.Route.mount(prefix, Air.Route.wrap(~Air.on_send(no_cache), [
+    Air.Route.get("/", status),
+    Air.Route.get("/visits", visits)
+  ]))
+```
+
+A plugin that needs a setting takes it as an argument. If the setting
+changes per deployment, read it inside the handler with
+[`Air.Config.get`](/docs/guides/configuration): route lists are rebuilt
+per request, and the app is a closed template, so a value from `main`
+cannot be passed in.

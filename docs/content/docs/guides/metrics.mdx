@@ -1,0 +1,93 @@
+---
+title: Metrics
+description: Request counts and a latency histogram per route, in the Prometheus text format.
+---
+
+`Air.metrics` is a middleware that counts every request by method,
+route pattern and status, and records how long it took. `Air.Metrics.expose`
+is a handler that answers those numbers in the Prometheus text format,
+which Prometheus, Grafana Agent, the OpenTelemetry Collector and
+VictoriaMetrics can all scrape.
+
+```python
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.use([Air.metrics, Air.request_id, Air.log], base)(req)
+
+def routes() -> List<Air.Route()>:
+  Air.Route.all([
+    app_routes(),
+    Air.Route.mount("/admin", Air.Route.wrap(~auth("secret"), [
+      Air.Route.get("/metrics", Air.Metrics.expose)
+    ]))
+  ])
+```
+
+Put `Air.metrics` first in the list so its timing covers the whole
+chain. Put the handler behind an auth middleware, or on a path your
+proxy does not expose, because the output names every route.
+
+## What it exports
+
+```text
+# HELP air_http_requests_total Requests answered, by method, route and status.
+# TYPE air_http_requests_total counter
+air_http_requests_total{method="GET",route="/hello/:name",status="200"} 12
+# HELP air_http_request_duration_seconds Time in the app, from the middleware's view.
+# TYPE air_http_request_duration_seconds histogram
+air_http_request_duration_seconds_bucket{route="/hello/:name",le="0.005"} 10
+air_http_request_duration_seconds_bucket{route="/hello/:name",le="0.01"} 12
+...
+air_http_request_duration_seconds_bucket{route="/hello/:name",le="+Inf"} 12
+air_http_request_duration_seconds_sum{route="/hello/:name"} 0.042
+air_http_request_duration_seconds_count{route="/hello/:name"} 12
+```
+
+The labels:
+
+| Label | Value |
+| --- | --- |
+| `route` | The pattern of the route that answered, as written, with any mount prefix: `/admin/users/:id`, not `/admin/users/7`. The label is `""` when no route answered: a 404, a 405, an automatic `OPTIONS`, or a response from a middleware outside `dispatch`, such as a CORS preflight answered by `Air.cors`. |
+| `method` | `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH` or `OPTIONS`. Any other method is `OTHER`, because clients choose the method and must not be able to add series. |
+| `status` | The status the app answered. A failed response carries its status whether or not `on_error` has rendered it, so the middleware can go before or after `on_error`. |
+
+The buckets are the Prometheus client defaults, 5 ms to 10 s. Durations
+are measured in whole milliseconds, so a sum is exact to the
+millisecond. Series are sorted by key.
+
+A request the server answers itself is not counted, because the app
+never runs. This includes a head that is too large, a malformed request
+and an app timeout (503). The server prints a line for each of those.
+
+A query such as `rate(air_http_requests_total{status=~"5.."}[5m])`
+gives the error rate per route. Use
+`histogram_quantile(0.99, sum by (le, route) (rate(air_http_request_duration_seconds_bucket[5m])))`
+for the p99 per route.
+
+## App counters
+
+```python
+Air.Metrics.count(req, "signups")
+```
+
+This adds one to `app_signups_total`. The name must match `[a-z0-9_]+`.
+Air ignores any other name, so a typo cannot produce an invalid
+exposition. App counters have no labels in this version.
+
+## Where the numbers live
+
+The counts are in the [store](/docs/guides/shared-state), in the
+`metrics` namespace. Each request takes the store lock once. The numbers
+last as long as the process. A restart resets them, and Prometheus's
+`rate()` handles that reset. Each process has its own store, so scrape
+every instance.
+
+The route label reaches the middleware on the response. When a route
+answers, the router sets the internal `air-route` header to the route's
+pattern. The server removes that header before it writes the response,
+and `Air.Test.inject` removes it too, so it never reaches a client. Your
+own middleware can read the header with `Air.Response.route(res)`.
+
+The number of series grows with the number of routes times the methods
+and statuses each route answers. A fixed route table keeps the count
+bounded. An app that generates thousands of routes produces thousands
+of series.

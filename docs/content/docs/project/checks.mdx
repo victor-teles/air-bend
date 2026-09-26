@@ -5,3 +5,25 @@ description: The proof gate to run before a commit.
 
 `bend PROOF.bend` proves the laws in `LAWS.bend`. It must print
 "All terms check." before a commit.
+
+`bend tests/hello.bend` and `bend tests/dashboard.bend` run the example
+apps in-process (see [Testing](/docs/guides/testing)). Run them from
+the repo root. Each prints one line per check and exits 1 if any failed.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every pull request and every push to
+`main`:
+
+- **Proof**: `bend PROOF.bend` must print "All terms check."
+- **Tests**: `tests/*.bend` built natively and run. Built rather than run
+  with `bend file.bend`, where the apps take about 25 s to start.
+- **Native builds**: both examples with `-o`. The C backend refuses two
+  defs whose names mangle to the same symbol, and only a native build
+  shows it.
+- **Docs**: `pnpm build` in `docs/`.
+- **Benchmark** (pull requests only): see [Benchmarks](/docs/project/benchmarks).
+
+Bend is pinned in `.github/actions/setup-bend/action.yml` (version and
+sha256 of the linux-x64 archive), with clang 19 for native builds. To
+move CI to a new Bend, change both inputs there.

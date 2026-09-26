@@ -931,3 +931,255 @@ def Laws.view_unclosed_section():
 
 def Laws.view_false_skips():
   {==}
+
+def Laws.test_get_raw():
+  {==}
+
+def Laws.test_post_length():
+  {==}
+
+def Laws.test_with_header():
+  {==}
+
+def Laws.refusal_render():
+  {==}
+
+def Laws.refusal_unchanged():
+  {==}
+
+def Laws.test_takes_body_by_length():
+  {==}
+
+def Laws.test_refuses_long_head():
+  {==}
+
+def Laws.test_refuses_long_body():
+  {==}
+
+def Laws.test_refuses_short_body():
+  {==}
+
+def Laws.test_refuses_unended_head():
+  {==}
+
+def Laws.test_refuses_parse():
+  {==}
+
+def Laws.config_parse():
+  {==}
+
+def Laws.config_parse_keys():
+  {==}
+
+def Laws.config_malformed():
+  {==}
+
+def Laws.config_hidden():
+  {==}
+
+def Laws.config_shown():
+  {==}
+
+def Laws.config_limits_default():
+  {==}
+
+def Laws.config_limits_body():
+  {==}
+
+def Laws.config_limits_bad():
+  {==}
+
+def Laws.config_timeouts_default():
+  {==}
+
+def Laws.config_port_range():
+  {==}
+
+def Laws.config_port_ok():
+  {==}
+
+def Laws.hooks_on_send_pure():
+  {==}
+
+def Laws.hooks_on_request_feeds():
+  {==}
+
+def Laws.hooks_on_fail_unchanged():
+  {==}
+
+def Laws.ready_ok():
+  {==}
+
+def Laws.ready_body():
+  {==}
+
+def Laws.ready_draining():
+  {==}
+
+def Laws.ready_down():
+  {==}
+
+def Laws.ready_down_503():
+  {==}
+
+def Laws.ready_down_sorted():
+  {==}
+
+def Laws.ready_no_store():
+  {==}
+
+def Laws.health_ok():
+  {==}
+
+def Laws.oa_str():
+  {==}
+
+def Laws.oa_obj_strict():
+  {==}
+
+def Laws.oa_obj_open():
+  {==}
+
+def Laws.oa_arr_enum():
+  {==}
+
+def Laws.oa_nested():
+  {==}
+
+def Laws.oa_template():
+  {==}
+
+def Laws.oa_template_root():
+  {==}
+
+def Laws.oa_operation_id():
+  {==}
+
+def Laws.oa_mount_keeps_notes():
+  {==}
+
+def Laws.oa_document():
+  {==}
+
+def Laws.oa_body_validates():
+  {==}
+
+def Laws.oa_body_passes():
+  {==}
+
+def Laws.route_pattern_named():
+  {==}
+
+def Laws.route_pattern_root():
+  {==}
+
+def Laws.route_on_hit():
+  {==}
+
+def Laws.route_mounted():
+  {==}
+
+def Laws.route_on_fallback():
+  {==}
+
+def Laws.route_none_on_404():
+  {==}
+
+def Laws.route_none_on_405():
+  {==}
+
+def Laws.route_read():
+  {==}
+
+def Laws.route_settled():
+  {==}
+
+def Laws.route_settled_failed():
+  {==}
+
+def Laws.m_document():
+  {==}
+
+def Laws.m_counter():
+  {==}
+
+def Laws.m_bucket():
+  {==}
+
+def Laws.m_bucket_edge():
+  {==}
+
+def Laws.m_le():
+  {==}
+
+def Laws.m_sum():
+  {==}
+
+def Laws.m_sum_carry():
+  {==}
+
+def Laws.m_other():
+  {==}
+
+def Laws.m_escape():
+  {==}
+
+def Laws.m_unmatched():
+  {==}
+
+def Laws.m_app_counter():
+  {==}
+
+def Laws.m_app_name_checked():
+  {==}
+
+def Laws.m_count_matches():
+  {==}
+
+def Laws.m_content_type():
+  {==}
+
+def Laws.log_line_trace():
+  {==}
+
+def Laws.tp_valid():
+  {==}
+
+def Laws.tp_zero_trace():
+  {==}
+
+def Laws.tp_zero_parent():
+  {==}
+
+def Laws.tp_upper():
+  {==}
+
+def Laws.tp_ff():
+  {==}
+
+def Laws.tp_future():
+  {==}
+
+def Laws.tp_00_extra():
+  {==}
+
+def Laws.tp_short():
+  {==}
+
+def Laws.tp_render():
+  {==}
+
+def Laws.tp_sampled_bit():
+  {==}
+
+def Laws.sample_stable():
+  {==}
+
+def Laws.span_name():
+  {==}
+
+def Laws.span_json():
+  {==}
+
+def Laws.tp_locals():
+  {==}

@@ -14,3 +14,8 @@ description: What Air does not do yet, and why.
 - Bodies are decoded as UTF-8 text by the runtime's `TCP.recv`. A
   multi-byte character split across two receives comes through as
   replacement characters, so binary uploads are not yet safe.
+- OTLP export: [`Air.trace`](/docs/guides/tracing) prints spans as JSON
+  lines for a collector to tail. Sending them to a collector over OTLP
+  needs an HTTP client built on `TCP.connect`, plus batching and
+  retries, run in a spawned task so it never blocks a request. Metrics
+  are scraped in the Prometheus format, not pushed.

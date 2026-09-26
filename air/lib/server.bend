@@ -447,7 +447,7 @@ def refuse.go(+ctx: Ctx, sock: Socket, method: String, path: String, +status: U3
     case False{}:
       do IO<Next>:
         log(method, path, status)
-        send(ctx, sock, SNil{}, False{}, False{}, Http.Response.with_status(Http.Response.text(Http.Status.reason(status)), status))
+        send(ctx, sock, SNil{}, False{}, False{}, Http.Response.refusal(status))
 
 def refuse(+ctx: Ctx, sock: Socket, method: String, path: String, +status: U32) -> IO(Next):
   refuse.go(ctx, sock, method, path, status, U32.is_eq(status, 0))
@@ -857,11 +857,31 @@ def knocked(r: Result<&1, &1, U32 & String, Socket>) -> IO(Unit):
 def knock(+port: U32) -> IO(Unit):
   IO.bind(Result<&1, &1, U32 & String, Socket>, Unit, TCP.connect("127.0.0.1", port), knocked)
 
-# Waits for the switch, then closes the gate and wakes the accept loop.
-def stopper(switch: Chan(Unit), +gate: Chan(Drain.Tally), +port: U32) -> IO(Unit):
+def pause(+ms: U32, none: Bool) -> IO(Unit):
+  match none:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        IO.print("air: draining for " ++ U32.show(ms) ++ " ms")
+        IO.sleep(ms)
+
+def pre_stop.go(+ms: U32) -> IO(Unit):
+  pause(ms, U32.is_zero(ms))
+
+# Waits `air/drain_delay` milliseconds from the store, 0 when unset.
+def pre_stop(+store: Chan(Store.Shelf())) -> IO(Unit):
+  IO.bind(String, Unit, Store.get(store, "air", "drain_delay"), d => pre_stop.go(Text.digits_or(d, 0)))
+
+# Waits for the switch, marks the store draining (`/readyz` answers 503
+# from then on), waits the drain delay while still serving, then closes
+# the gate and wakes the accept loop.
+def stopper(switch: Chan(Unit), +gate: Chan(Drain.Tally), +store: Chan(Store.Shelf()), +port: U32) -> IO(Unit):
   do IO<Unit>:
     Drain.Switch.wait(switch)
     IO.print("air: stopping")
+    Store.set(store, "air", "draining", "1")
+    pre_stop(store)
     Drain.close(gate)
     knock(port)
 
@@ -877,7 +897,7 @@ def stopped(+gate: Chan(Drain.Tally), drained: Bool) -> IO(Unit):
 def serve_shared.go(~app: Chan(Unit) -> Router.Handler(), +limits: Http.Limits, +timeouts: Timeouts, +store: Chan(Store.Shelf()), +switch: Chan(Unit), +port: U32, listener: Listener, gate: Chan(Drain.Tally)) -> IO(Unit):
   +g = gate
   do IO<Unit>:
-    IO.spawn(Unit, stopper(switch, g, port))
+    IO.spawn(Unit, stopper(switch, g, store, port))
     IO.print("air: listening on http://localhost:" ++ U32.show(port))
     loop(~app, limits, timeouts, switch, g, store, 4294967295n, Serving{listener})
     drained : Bool <- Drain.wait_for(g, Timeouts.drain(timeouts))

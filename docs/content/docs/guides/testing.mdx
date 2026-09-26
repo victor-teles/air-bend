@@ -1,0 +1,80 @@
+---
+title: Testing
+description: Run an app on a request without opening a socket.
+---
+
+Laws in `LAWS.bend` check pure pieces, but they cannot run `IO`, so a
+handler that touches the store or a middleware chain needs another way
+in. `Air.Test.inject` runs an app on a request written as raw HTTP text
+and gives back the response the server would have written. No port is
+opened.
+
+A test is a program. Keep the app in its own file (the examples keep it
+in `app.bend`, beside a `main.bend` that serves it) so the test can
+import it without a second `main`:
+
+```python
+import Base
+import ../air.bend as Air
+import ../examples/hello/app.bend as Hello
+
+def greets() -> IO(Bool):
+  IO.bind(Air.Response(), Bool, Air.Test.inject(Hello.app, Air.Test.get("/hello/ada")),
+    res => Air.Test.expect("greets", Air.Response.body(res), "Olá, ada!"))
+
+def main() -> IO(Unit):
+  do IO<Unit>:
+    a : Bool <- greets()
+    Air.Test.finish([a])
+```
+
+```
+$ bend tests/hello.bend
+ok - greets
+1 passed, 0 failed
+```
+
+`finish` ends the process with code 1 when a check failed, and prints
+`not ok - name: want "…" got "…"` for each failure.
+
+## Requests
+
+`Air.Test.get(target)` and `Air.Test.post(target, content_type, body)`
+write the request text, `Content-Length` included. `Air.Test.with_header(name, value, raw)`
+adds a header line. Any raw text works too, and it is read as the
+server reads it:
+
+- the head goes through the same parser under the default limits, so a
+  bad request line is a 400, a head over 16 KiB a 431 and a bad version
+  a 505, each with the body the server would send;
+- the body is cut at its `Content-Length`. A body over the limit is a
+  413. A body shorter than its length is a 400 here, where the server
+  would wait for the rest.
+
+## State across requests
+
+`inject` gives each request a fresh store. To check a counter, a
+session or a rate limit, make one store and pass it to `inject_shared`:
+
+```python
+def visits(store: Air.Store()) -> IO(Bool):
+  +store = store
+  do IO<Bool>:
+    a : Air.Response() <- Air.Test.inject_shared(Hello.app, store, Air.Test.get("/visits"))
+    b : Air.Response() <- Air.Test.inject_shared(Hello.app, store, Air.Test.get("/visits"))
+    Air.Test.expect("counts", Air.Response.body(a) ++ "," ++ Air.Response.body(b), "1,2")
+```
+
+## Streams
+
+`Air.Response.body` is empty for a streamed response.
+`Air.Test.body(res)` reads the stream until the producer closes it and
+answers the pieces joined. A producer that sleeps between pieces makes
+the test wait just as long.
+
+## What is not simulated
+
+Timeouts (there is no connection to watch), keep-alive,
+`Expect: 100-continue` and chunked request bodies, which reach the app
+as written. Effects run for real: request ids and session tokens are
+random, so check their shape, not their value.

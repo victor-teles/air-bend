@@ -1,6 +1,7 @@
 import Base
 import ./text.bend as Text
 import ./random.bend as Random
+import ./clock.bend as Clock
 import ./json.bend as Json
 import ./http.bend as Http
 import ./router.bend as Router
@@ -45,34 +46,45 @@ def request_id(next: Router.Handler(), req: Http.Request) -> IO(Http.Response):
 # Lines
 # -----
 
-# One JSON object: `{"ts":…,"id":"…","method":"GET","path":"/x","status":200,"ms":3}`.
-# `ts` is the start as `IO.now` counts it: milliseconds since the process
-# started, since Bend 2.0.10 has no wall clock. Strings are escaped by
-# the renderer, so a path cannot break the line.
-def line(ts: Nat, id: String, method: String, path: String, status: U32, ms: Nat) -> String:
-  Json.render(Json.obj([
-    Json.field("ts", Json.num(Nat.show(ts))),
-    Json.field("id", Json.of_str(id)),
-    Json.field("method", Json.of_str(method)),
-    Json.field("path", Json.of_str(path)),
-    Json.field("status", Json.of_u32(status)),
-    Json.field("ms", Json.num(Nat.show(ms)))
-  ]))
+# The `trace_id` field, only when tracing gave the request one.
+def trace_field(trace_id: String, rest: List<&2, Json.Field()>) -> List<&2, Json.Field()>:
+  match trace_id:
+    case SNil{}:
+      rest
+    case SCon{h, t}:
+      Con{Json.field("trace_id", Json.of_str(SCon{h, t})), rest}
 
-def log.fin(id: String, method: String, path: String, +before: Nat, res: Http.Response, after: Nat) -> IO(Http.Response):
+# One JSON object: `{"ts":…,"id":"…","method":"GET","path":"/x","status":200,"ms":3}`,
+# with `"trace_id"` after the id when `Air.trace` runs outside `log`.
+# `ts` is the start in Unix epoch milliseconds, from the wall clock
+# (`Clock.wall_ms`), as decimal text. Strings are escaped by the
+# renderer, so a path cannot break the line.
+def line(ts: String, id: String, trace_id: String, method: String, path: String, status: U32, ms: Nat) -> String:
+  Json.render(Json.obj(Con{
+    Json.field("ts", Json.num(ts)),
+    Con{Json.field("id", Json.of_str(id)),
+    trace_field(trace_id, [
+      Json.field("method", Json.of_str(method)),
+      Json.field("path", Json.of_str(path)),
+      Json.field("status", Json.of_u32(status)),
+      Json.field("ms", Json.num(Nat.show(ms)))
+    ])}}))
+
+def log.fin(ts: String, +req: Http.Request, +before: Nat, res: Http.Response, after: Nat) -> IO(Http.Response):
   +res = res
   do IO<Http.Response>:
-    IO.print(line(before, id, method, path, Http.Response.status(res), Nat.sub(after, before)))
+    IO.print(line(ts, Http.Request.local(req, "request_id"), Http.Request.local(req, "trace_id"),
+      Http.Method.show(Http.Request.method(req)), Http.Request.path(req), Http.Response.status(res), Nat.sub(after, before)))
     return res
 
-def log.go(id: String, method: String, path: String, before: Nat, res: Http.Response) -> IO(Http.Response):
-  IO.bind(Nat, Http.Response, IO.now(), log.fin(id, method, path, before, res))
-
 # The middleware: runs `next` and prints the line. The id is the
-# `request_id` local, "" without `request_id` outside this.
+# `request_id` local, "" without `request_id` outside this; the trace id
+# is the `trace_id` local.
 def log(next: Router.Handler(), req: Http.Request) -> IO(Http.Response):
   +req = req
   do IO<Http.Response>:
+    ts : String <- Clock.wall_ms()
     before : Nat <- IO.now()
     res : Http.Response <- next(req)
-    log.go(Http.Request.local(req, "request_id"), Http.Method.show(Http.Request.method(req)), Http.Request.path(req), before, res)
+    after : Nat <- IO.now()
+    log.fin(ts, req, before, res, after)

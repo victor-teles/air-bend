@@ -1034,6 +1034,22 @@ def Response.with_header(r: Response, name: String, value: String) -> Response:
     case Response{s, h, c, b}:
       Response{s, Map.set(&2, String, h, String.to_lower(name), value), c, b}
 
+# The router's note of the route that answered, as written
+# ("/users/:id"); "" when no route did (404, 405, OPTIONS). An internal
+# header: `settle` removes it, so it never reaches the wire.
+def Response.route_header() -> String:
+  "air-route"
+
+def Response.with_route(r: Response, pattern: String) -> Response:
+  match r:
+    case Response{s, h, c, b}:
+      Response{s, Map.set(&2, String, h, Response.route_header(), pattern), c, b}
+
+def Response.route(r: Response) -> String:
+  match r:
+    case Response{s, h, c, b}:
+      Text.map_get(h, Response.route_header(), SNil{})
+
 # Sets a header only when the response lacks it, so a handler's own
 # value wins over a middleware's default. `with_default_lower` takes a
 # name already lowercase, sparing the pass over it: what the shield's
@@ -1078,6 +1094,12 @@ def Response.empty(status: U32) -> Response:
 
 def Response.text(body: String) -> Response:
   Response.with_header(Response.new(200, body), "content-type", "text/plain; charset=utf-8")
+
+# What the server sends for a request the app never saw: a bad head, a
+# limit, the 503 of a timeout or a stopping server. The reason phrase
+# as plain text.
+def Response.refusal(+status: U32) -> Response:
+  Response.with_status(Response.text(Status.reason(status)), status)
 
 def Response.html(body: String) -> Response:
   Response.with_header(Response.new(200, body), "content-type", "text/html; charset=utf-8")
@@ -1525,10 +1547,11 @@ def Response.settle.go(s: U32, h: Map<&2, String>, c: List<&2, String>, b: Body,
 
 # Renders a failed body as plain text under `env`; a content type the
 # response already has is kept. Whole and stream bodies pass through.
+# The router's `air-route` note is removed from all three.
 def Response.settle(env: Env, r: Response) -> Response:
   match r:
     case Response{s, h, c, b}:
-      Response.settle.go(s, h, c, b, env)
+      Response.settle.go(s, Map.del(&2, String, h, Response.route_header()), c, b, env)
 
 def Response.render_header(kv: Text.Two()) -> String:
   (k, v) = kv

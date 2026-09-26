@@ -143,6 +143,33 @@ def shutdown(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
     Air.Switch.flip(switch)
     return Air.Response.of_json(Air.Json.obj([Air.Json.field("stopping", Air.Json.of_bool(True{}))]))
 
+# Observability
+# -------------
+#
+# `Air.metrics` and `Air.trace` wrap the whole app (see `app.fin`), so
+# every request is counted by route pattern and becomes one span, and
+# the log line carries its trace id. `/metrics` answers the counts for
+# Prometheus; in production put it behind auth or on a path the proxy
+# does not expose, since it names every route. `/trace` shows the ids a
+# handler sees; `traceparent` is what it would send downstream:
+# `curl -H 'traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' localhost:8080/trace`.
+# They live here rather than in hello, whose routes are the benchmark.
+
+def trace_ids(req: Air.Request()) -> IO(Air.Response()):
+  +req = req
+  IO.pure(Air.Response(), Air.Response.text(String.join([
+    Air.Request.local(req, "traceparent"),
+    Air.Request.local(req, "trace_id"),
+    Air.Request.local(req, "parent_id"),
+    Air.Request.local(req, "span_id")
+  ], "\n")))
+
+def observed() -> List<Air.Route()>:
+  [
+    Air.Route.get("/metrics", Air.Metrics.expose),
+    Air.Route.get("/trace", trace_ids)
+  ]
+
 # One route for the page and everything beside it; it goes after the
 # API mount so `/api/...` matches first.
 def pages() -> List<Air.Route()>:
@@ -178,11 +205,14 @@ def routes(+switch: Air.Switch()) -> List<Air.Route()>:
     Air.health(),
     api_mounted(switch),
     [Air.Route.get("/openapi.json", Air.openapi("Air dashboard", "1.0.0", api_mounted(switch)))],
+    observed(),
     pages()
   ])
 
 # The app takes the stop switch along with the request, as `serve_until`
-# hands it over, so a route can stop the server. Every request gets an
+# hands it over, so a route can stop the server. Every request is
+# counted and traced (`metrics` is outermost so its timing covers the
+# chain; `trace` sits inside `request_id` and outside `log`), and gets an
 # id and a log line, every response the default security headers; a front end served elsewhere in development
 # (Vite's port, say) may call the API thanks to `cors`. Errors, the
 # router's 404 included, are rendered as JSON; `AIR_ENV=dev` adds detail
@@ -192,7 +222,9 @@ def base(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
 
 def app.fin(switch: Air.Switch(), req: Air.Request(), env: Air.Env()) -> IO(Air.Response()):
   Air.use([
+    Air.metrics,
     Air.request_id,
+    Air.trace(Air.Trace.print),
     Air.log,
     Air.shield(Air.Shield.default()),
     Air.cors(Air.Cors.new(["http://localhost:5173"])),

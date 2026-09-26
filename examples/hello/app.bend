@@ -310,32 +310,6 @@ def flood_room(wide: Bool) -> IO(Chan(String)):
 def flood(req: Air.Request()) -> IO(Air.Response()):
   IO.bind(Chan(String), Air.Response(), flood_room(String.eq(Air.Request.query(req, "room"), "64")), flood.start)
 
-# Metrics
-# -------
-#
-# `Air.metrics` wraps the whole app (see `app.fin`) and counts every
-# request by method, route pattern and status, with a latency
-# histogram. `/admin/metrics` answers them for Prometheus, behind
-# `auth` since it names every route:
-# `curl -H 'x-token: secret' localhost:8080/admin/metrics`.
-
-# Tracing
-# -------
-#
-# `Air.trace` (see `app.fin`) continues a W3C `traceparent` or starts a
-# trace, and prints one span per request as a JSON line. `/trace` shows
-# what a handler sees; `traceparent` is what it would send downstream:
-# `curl -H 'traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' localhost:8080/trace`.
-
-def trace_ids(req: Air.Request()) -> IO(Air.Response()):
-  +req = req
-  IO.pure(Air.Response(), Air.Response.text(String.join([
-    Air.Request.local(req, "traceparent"),
-    Air.Request.local(req, "trace_id"),
-    Air.Request.local(req, "parent_id"),
-    Air.Request.local(req, "span_id")
-  ], "\n")))
-
 # Routes
 # ------
 
@@ -354,8 +328,7 @@ def public() -> List<Air.Route()>:
     Air.Route.get("/limited", Air.rate(5, 10000, Air.Rate.by_ip(Air.Trust.none()))(limited)),
     Air.Route.get("/page/:name", page),
     Air.Route.get("/empty", empty),
-    Air.Route.get("/config/greeting", greeting),
-    Air.Route.get("/trace", trace_ids)
+    Air.Route.get("/config/greeting", greeting)
   ]
 
 def with_session() -> List<Air.Route()>:
@@ -369,7 +342,6 @@ def admin() -> List<Air.Route()>:
     Air.Route.get("/whoami", whoami),
     Air.Route.get("/area", area),
     Air.Route.post("/demo/:state", demo),
-    Air.Route.get("/metrics", Air.Metrics.expose),
     Air.Route.get("/flood", flood)
   ]
 
@@ -390,9 +362,6 @@ def routes() -> List<Air.Route()>:
 def base(req: Air.Request()) -> IO(Air.Response()):
   Air.dispatch(routes(), req)
 
-# `metrics` is outermost, so its timing covers the whole chain. `trace`
-# sits inside `request_id` and outside `log`, so the log line carries
-# the trace id.
 # `request_id` and `log` wrap the whole app; `shield` adds defensive
 # headers and `cors` lets any origin call; then `on_error` renders
 # failures as plain text. The first middleware in the list is the
@@ -401,9 +370,7 @@ def base(req: Air.Request()) -> IO(Air.Response()):
 # the environment is read per request rather than passed in from `main`.
 def app.fin(req: Air.Request(), env: Air.Env()) -> IO(Air.Response()):
   Air.use([
-    Air.metrics,
     Air.request_id,
-    Air.trace(Air.Trace.print),
     Air.log,
     Air.shield(Air.Shield.default()),
     Air.cors(Air.Cors.any()),

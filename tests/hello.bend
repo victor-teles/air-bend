@@ -2,8 +2,6 @@ import Base
 import ../air.bend as Air
 import ../examples/hello/app.bend as Hello
 import ../air/lib/store.bend as Store
-import ../air/lib/text.bend as Text
-import ../air/lib/trace.bend as Trace
 
 # Tests for examples/hello
 # ========================
@@ -215,86 +213,6 @@ def unlabelled() -> IO(Bool):
   IO.bind(Air.Response(), Bool, run(Air.Test.get("/hello/ada")),
     res => Air.Test.expect("air-route never reaches the client", with_header(res, "air-route"), "200 "))
 
-def metrics_locked() -> IO(Bool):
-  IO.bind(Air.Response(), Bool, run(Air.Test.get("/admin/metrics")),
-    res => Air.Test.expect("/admin/metrics without a token is 401", summary(res), "401 Unauthorized"))
-
-def metrics_lines(+body: String) -> String:
-  String.join([
-    Bool.show(String.contains(body, "air_http_requests_total{method=\"GET\",route=\"/hello/:name\",status=\"200\"} 3\n")),
-    Bool.show(String.contains(body, "air_http_requests_total{method=\"GET\",route=\"\",status=\"404\"} 1\n")),
-    Bool.show(String.contains(body, "air_http_request_duration_seconds_bucket{route=\"/hello/:name\",le=\"+Inf\"} 3\n")),
-    Bool.show(String.contains(body, "air_http_request_duration_seconds_count{route=\"/hello/:name\"} 3\n"))
-  ], " ")
-
-def metrics_counted.fin(+res: Air.Response()) -> IO(Bool):
-  Air.Test.expect("/admin/metrics counts by route pattern",
-    with_header(res, "content-type") ++ " " ++ metrics_lines(Air.Response.body(res)),
-    "200 text/plain; version=0.0.4; charset=utf-8 True True True True")
-
-# Three hits on one route and a miss, then a scrape: the route's
-# counter, `+Inf` bucket and `_count` agree, and the miss is `route=""`.
-def metrics_counted(store: Air.Store()) -> IO(Bool):
-  +store = store
-  do IO<Bool>:
-    a : Air.Response() <- Air.Test.inject_shared(Hello.app, store, Air.Test.get("/hello/a"))
-    b : Air.Response() <- Air.Test.inject_shared(Hello.app, store, Air.Test.get("/hello/b"))
-    c : Air.Response() <- Air.Test.inject_shared(Hello.app, store, Air.Test.get("/hello/c"))
-    d : Air.Response() <- Air.Test.inject_shared(Hello.app, store, Air.Test.get("/nope"))
-    res : Air.Response() <- Air.Test.inject_shared(Hello.app, store, as_admin(Air.Test.get("/admin/metrics")))
-    metrics_counted.fin(res)
-
-# Tracing
-# -------
-#
-# `/trace` answers its trace locals, one per line: `traceparent`,
-# `trace_id`, `parent_id`, `span_id`.
-
-def valid(+tp: String) -> String:
-  Bool.show(Bool.not(Maybe.is_none(&2, Trace.Parent, Trace.parse(tp))))
-
-def trace_view(lines: List<&2, String>) -> String:
-  match lines:
-    case Con{+tp, Con{+trace_id, Con{parent_id, Con{+span_id, Nil{}}}}}:
-      String.join([
-        valid(tp),
-        Bool.show(String.eq(tp, "00-" ++ trace_id ++ "-" ++ span_id ++ "-01")),
-        trace_id,
-        "parent=" ++ parent_id
-      ], " ")
-    case _:
-      "malformed"
-
-def view(+res: Air.Response()) -> String:
-  trace_view(Text.split_all(Air.Response.body(res), '\n'))
-
-def traceparent(value: String, raw: String) -> String:
-  Air.Test.with_header("traceparent", value, raw)
-
-# A valid header: same trace, the caller's span as parent, a new span.
-def trace_continued() -> IO(Bool):
-  IO.bind(Air.Response(), Bool, run(traceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", Air.Test.get("/trace"))),
-    res => Air.Test.expect("a valid traceparent is continued", view(res),
-      "True True 4bf92f3577b34da6a3ce929d0e0e4736 parent=00f067aa0ba902b7"))
-
-def fresh(+view: String) -> Bool:
-  Bool.and(String.contains(view, "True True "), String.contains(view, " parent="))
-
-def trace_fresh.fin(+view: String) -> IO(Bool):
-  Air.Test.expect_true("no traceparent starts a sampled root", Bool.and(fresh(view), String.ends_with(view, "parent=")), view)
-
-def trace_fresh() -> IO(Bool):
-  IO.bind(Air.Response(), Bool, run(Air.Test.get("/trace")), res => trace_fresh.fin(view(res)))
-
-# An all-zero trace id is invalid: a new trace, not the zero one.
-def trace_invalid.fin(+view: String) -> IO(Bool):
-  Air.Test.expect_true("an invalid traceparent starts a new trace",
-    Bool.and(Bool.and(fresh(view), String.ends_with(view, "parent=")), Bool.not(String.contains(view, "00000000000000000000000000000000"))), view)
-
-def trace_invalid() -> IO(Bool):
-  IO.bind(Air.Response(), Bool, run(traceparent("00-00000000000000000000000000000000-00f067aa0ba902b7-01", Air.Test.get("/trace"))),
-    res => trace_invalid.fin(view(res)))
-
 # Streaming
 # ---------
 
@@ -358,11 +276,5 @@ def main() -> IO(Unit):
     stopping : Air.Store() <- Air.Store.new()
     aa : Bool <- draining(stopping)
     ab : Bool <- unlabelled()
-    ac : Bool <- metrics_locked()
-    scraped : Air.Store() <- Air.Store.new()
-    ad : Bool <- metrics_counted(scraped)
-    ae : Bool <- trace_continued()
-    af : Bool <- trace_fresh()
-    ag : Bool <- trace_invalid()
     ah : Bool <- narrow_whole()
-    Air.Test.finish([a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, t, u, v, w, x, y, z, aa, ab, ac, ad, ae, af, ag, ah])
+    Air.Test.finish([a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, t, u, v, w, x, y, z, aa, ab, ah])

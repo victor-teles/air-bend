@@ -55,6 +55,26 @@ rounds, within the noise. The runner's own noise has not been measured
 yet; if a same-binary run there strays past 15%, raise `ROUNDS` before
 the threshold.
 
+## 2026-09-25 (PR #6 benchmark gate), Apple Silicon, 32 connections, 5s
+
+CI's A/B of this branch against `main` failed: GET 0.423, POST 0.558,
+with spreads of 2-12%. Measured locally against a `main` build:
+
+| hello built from                                         | GET   | POST  |
+| -------------------------------------------------------- | ----: | ----: |
+| the branch, `Air.metrics` and `Air.trace` in `use`       | 0.492 | 0.640 |
+| the same without those two middlewares                   | 0.869 | 0.949 |
+| the same with `Air.log`'s wall clock removed (vs above)  | 0.996 | 0.996 |
+| the fix: observability demos moved to the dashboard (7 rounds) | 0.886 | 0.935 |
+
+The regression was the example, not the framework. Hello turned on the
+opt-in metrics lock and trace ids for every route, the benchmarked one
+included. The metrics and tracing demos now live in the dashboard,
+which is not benchmarked, the way hello already wraps only groups in
+sessions and hooks. What remains, about 11% on GET, comes from tier 6's
+router and response work plus hello's longer route table, which is
+rebuilt on every request.
+
 ## 2026-09-24 (plan 027, stream backpressure), Apple Silicon, native hello
 
 `/admin/flood` streams 20,000 pieces of 16 KiB (about 320 MB). Each
@@ -104,7 +124,8 @@ id cost about 15-20% more than continuing a trace. Printing the span
 line costs a few percent. Starting a trace crosses plan 026's 30% STOP
 line. Cheaper trace ids would mean fewer draws mixed with the clock,
 which weakens the randomness the spec asks for, so that choice is left
-to the operator. The CI gate (0.85) fails on hello with tracing on.
+to the operator. The CI gate (0.85) would fail with tracing on in hello's
+`use`, so the tracing demo is in the dashboard (see 2026-09-25).
 POST ratios were 0.75 for start and 0.83 for continue, with a few
 connection errors on both sides.
 
@@ -127,8 +148,8 @@ Medians:
 The annotation is within noise. The middleware costs about 14% on the
 cheapest route, about as much as the rate-limited route pays for its
 own lock. Together they come to about 0.85 of the tree before 025, which
-is at the CI gate's threshold, so a pull request that adds metrics to
-hello may need `bench-accepted`. An app that does not use `Air.metrics`
+is at the CI gate's threshold. The metrics demo is therefore in the
+dashboard, not hello (see 2026-09-25). An app that does not use `Air.metrics`
 pays only for the annotation.
 
 ## 2026-09-21 (after Tier 5 store, rate limiting and sessions), Apple Silicon, 32 connections, 5s

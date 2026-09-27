@@ -1,0 +1,334 @@
+---
+title: Request reference
+description: Every def that reads a request in Air, with its return value for absent, repeated, and malformed input.
+---
+
+This page lists the defs that read an `Air.Request()`. Every def is total:
+it returns `""`, `[]`, or `None` for absent data, and it never fails. For
+examples by task, see [Read request data](/docs/guides/requests).
+
+A handler parameter is affine: you can use it one time. To read a request
+more than one time, rebind it with `+` at the start of the handler:
+
+```python
+def show(req: Air.Request()) -> IO(Air.Response()):
+  +req = req
+  IO.pure(Air.Response(), Air.Response.text(Air.Request.header(req, "host") ++ Air.Request.path(req)))
+```
+
+## Request line
+
+### Air.Request.method
+
+```python
+def Request.method(r: Air.Request()) -> Air.Method()
+```
+
+Returns the method. To get its name, call `Air.Method.show`, which returns
+`GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS`, or the name of
+another method as sent. `Air.Method.is_eq(a, b)` compares two methods.
+
+### Air.Request.version
+
+```python
+def Request.version(r: Air.Request()) -> String
+```
+
+Returns `HTTP/1.1` or `HTTP/1.0`, as the request line says.
+
+### Air.Request.path
+
+```python
+def Request.path(r: Air.Request()) -> String
+```
+
+Returns the path in its normal form. Air makes the normal form with these
+rules:
+
+- It decodes percent escapes. `%41` becomes `A`, and `%2F` becomes `/`.
+- It keeps `+` as `+`.
+- It resolves `.` and `..`, and it makes repeated slashes into one slash.
+- It keeps a trailing slash.
+- For an absolute target, such as `http://example.com/a`, it keeps only the
+  path.
+- For `OPTIONS *`, it returns `*`.
+
+| Target | Path |
+| --- | --- |
+| `/p//a/./b/../c/` | `/p/a/c/` |
+| `/p/a%2Fb/%41%20x+y` | `/p/a/b/A x+y` |
+| `http://example.com/p/x?y=1` | `/p/x` |
+
+The server responds with 400 to a path with a bad escape such as `%zz`, a
+`%00`, or a `..` that goes above the root.
+
+### Air.Request.target
+
+```python
+def Request.target(r: Air.Request()) -> String
+```
+
+Returns the request target as the client sent it: the raw path and the
+query, not decoded.
+
+## Headers
+
+### Air.Request.header
+
+```python
+def Request.header(r: Air.Request(), name: String) -> String
+```
+
+Returns the value of the header `name`. The name is not case-sensitive.
+Returns `""` when the header is absent. When the header appears more than
+one time, returns the values joined with `, `. For example, `X-A: 1` and
+`x-a: 2` return `1, 2`.
+
+### Air.Request.media_type
+
+```python
+def Request.media_type(r: Air.Request()) -> String
+```
+
+Returns the media type of `Content-Type`, in lowercase, with no
+parameters. For `Application/JSON; charset=utf-8`, it returns
+`application/json`.
+
+## Query parameters
+
+### Air.Request.query
+
+```python
+def Request.query(r: Air.Request(), key: String) -> String
+```
+
+Returns the value of the query parameter `key`, percent-decoded, with `+`
+as a space. When the key appears more than one time, returns the last
+value. Returns `""` when the key is absent or has no `=`. The server
+responds with 400 to a query with a bad escape.
+
+### Air.Request.query_all
+
+```python
+def Request.query_all(r: Air.Request(), key: String) -> List<&2, String>
+```
+
+Returns every value of `key`, in order. Keys are flat: `k[x]` is a key
+named `k[x]`.
+
+| Query | `query(r, "a")` | `query_all(r, "a")` |
+| --- | --- | --- |
+| `?a=1&a=x+y%21` | `x y!` | `["1", "x y!"]` |
+| `?b=%2B` | `""` | `[]` |
+| (none) | `""` | `[]` |
+
+## Path parameters and request locals
+
+### Air.Request.param
+
+```python
+def Request.param(r: Air.Request(), key: String) -> String
+```
+
+Returns the value that the route bound to `:key` or `*key`. Returns `""`
+when the route has no such segment.
+
+### Air.Request.local
+
+```python
+def Request.local(r: Air.Request(), key: String) -> String
+```
+
+Returns the request local `key`, which a middleware set. Returns `""`
+when it is absent.
+
+### Air.Request.with_local
+
+```python
+def Request.with_local(r: Air.Request(), key: String, value: String) -> Air.Request()
+```
+
+Returns the request with the request local `key` set to `value`. A
+middleware passes this request to `next`.
+
+### Air.Request.id
+
+```python
+def Request.id(r: Air.Request()) -> String
+```
+
+Returns the id from `Air.request_id`. Returns `""` without that middleware.
+
+### Air.Request.session_id
+
+```python
+def Request.session_id(r: Air.Request()) -> String
+```
+
+Returns the session token from `Air.session`. Returns `""` without that
+middleware.
+
+### Air.Request.store
+
+```python
+def Request.store(r: Air.Request()) -> Maybe<&2, Air.Store()>
+```
+
+Returns the store of the server. Returns `None` for a request that no
+server made. You do not usually need this def, because the `Air.Store.*`
+defs take the request.
+
+## Body
+
+### Air.Request.body
+
+```python
+def Request.body(r: Air.Request()) -> String
+```
+
+Returns the body as text. Bend reads socket data as UTF-8, so a binary
+body is not preserved byte for byte.
+
+### Air.Request.json
+
+```python
+def Request.json(r: Air.Request()) -> Maybe<&2, Air.Json()>
+```
+
+Returns the body as JSON. Returns `None` when the media type is not
+`application/json` or `+json`, or when the body does not parse.
+
+### Air.Request.form and Air.Request.form_all
+
+```python
+def Request.form(r: Air.Request(), key: String) -> String
+def Request.form_all(r: Air.Request(), key: String) -> List<&2, String>
+```
+
+Read an `application/x-www-form-urlencoded` body with the same rules as
+`Air.Request.query` and `Air.Request.query_all`. They return `""` and `[]`
+when the media type is different, and for every key when the body has a
+bad escape.
+
+### Air.Request.parts
+
+```python
+def Request.parts(r: Air.Request()) -> Maybe<&2, List<&2, Air.Part()>>
+```
+
+Returns the parts of a `multipart/form-data` body, in order. Returns
+`None` when the media type is different or Air cannot parse the body.
+
+| Def | Returns |
+| --- | --- |
+| `Air.Part.name(p)` | The name of the part. |
+| `Air.Part.filename(p)` | The file name as `Some`, or `None` for a plain field. |
+| `Air.Part.mime(p)` | The content type of the part, or `text/plain` when it has none. |
+| `Air.Part.body(p)` | The content of the part, as text. |
+| `Air.Part.field(parts, name)` | The body of the first plain field named `name`, or `""`. |
+| `Air.Part.file(parts, name)` | The first file part named `name`, or `None`. |
+
+## Cookies
+
+### Air.Request.cookie
+
+```python
+def Request.cookie(r: Air.Request(), name: String) -> String
+```
+
+Returns the value of the first cookie named `name`, with spaces trimmed.
+Returns `""` when it is absent.
+
+### Air.Request.cookies
+
+```python
+def Request.cookies(r: Air.Request()) -> List<&2, Sigma<&2, &2, String, _ => String>>
+```
+
+Returns every cookie as a `(name, value)` pair, in order. Quotes around a
+value stay. Air drops a pair with an empty name.
+
+## Content negotiation
+
+### Air.Request.accepts
+
+```python
+def Request.accepts(r: Air.Request(), offers: List<&2, String>) -> Maybe<&2, String>
+```
+
+Returns the offer that the `Accept` header prefers, by q-value and then by
+how specific the match is. On a tie, returns the earliest offer. Returns
+the first offer when the header is absent. Returns `None` when the header
+accepts no offer.
+
+| `Accept` | Offers | Result |
+| --- | --- | --- |
+| (absent) | `["application/json", "text/html"]` | `Some("application/json")` |
+| `text/html;q=0.9, application/*;q=0.8` | `["application/json", "text/html"]` | `Some("text/html")` |
+| `image/png, */*;q=0` | `["application/json", "text/html"]` | `None` |
+
+### Air.Request.accepts_encoding and Air.Request.accepts_language
+
+```python
+def Request.accepts_encoding(r: Air.Request(), offers: List<&2, String>) -> Maybe<&2, String>
+def Request.accepts_language(r: Air.Request(), offers: List<&2, String>) -> Maybe<&2, String>
+```
+
+Work like `Air.Request.accepts` on `Accept-Encoding` and
+`Accept-Language`. For languages, a range matches its subtags: `en`
+accepts `en-us`. Write language offers in lowercase, such as `pt-br`.
+
+## Proxy headers
+
+These defs read forwarding headers only when you pass `Air.Trust.proxy()`.
+With `Air.Trust.none()`, they ignore those headers.
+
+| Def | Returns |
+| --- | --- |
+| `Air.Trust.none()` | A value that ignores forwarding headers. |
+| `Air.Trust.proxy()` | A value that believes `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, and `Forwarded`. |
+
+<Callout type="warn">
+Use `Air.Trust.proxy()` only when clients can reach Air through the proxy
+and in no other way. Otherwise, a client can set the headers.
+</Callout>
+
+### Air.Request.client_ip
+
+```python
+def Request.client_ip(r: Air.Request(), trust: Air.Trust()) -> Maybe<&2, String>
+```
+
+Returns the client address from the last entry of `X-Forwarded-For`, or
+else from the last `for=` node of `Forwarded`, without brackets and port.
+Returns `None` under `Air.Trust.none()`, because Bend gives no peer
+address for a TCP connection.
+
+### Air.Request.host
+
+```python
+def Request.host(r: Air.Request(), trust: Air.Trust()) -> String
+```
+
+Returns the first entry of `X-Forwarded-Host`, or else the `host=` of
+`Forwarded`, under a trusted proxy. Otherwise, returns the `Host` header.
+
+### Air.Request.scheme
+
+```python
+def Request.scheme(r: Air.Request(), trust: Air.Trust()) -> String
+```
+
+Returns `https` when a trusted proxy says so in `X-Forwarded-Proto` or
+`Forwarded`. Otherwise, returns `http`.
+
+| Headers | `client_ip` | `host` | `scheme` |
+| --- | --- | --- | --- |
+| `X-Forwarded-For: 1.1.1.1, 2.2.2.2`, `X-Forwarded-Host: a.example, b.example`, `X-Forwarded-Proto: HTTPS, http` | `Some("2.2.2.2")` | `a.example` | `https` |
+| `Forwarded: for=9.9.9.9, for="[2001:db8::1]:8080";host=f.example;proto=https` | `Some("2001:db8::1")` | `f.example` | `https` |
+
+## Related
+
+- [Read request data](/docs/guides/requests)
+- [Response reference](/docs/reference/response)
+- [Run Air in production](/docs/guides/deploy)

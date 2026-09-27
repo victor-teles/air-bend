@@ -1,0 +1,83 @@
+---
+title: Terminology
+description: The one approved term for each Air concept, and the words the docs do not use for it.
+---
+
+The Air documentation uses one term for each concept. This table lists
+the approved term and the words that the docs do not use for the same
+concept. Use the approved terms in pages, pull request descriptions, code
+comments, and error messages.
+
+## Framework terms
+
+| Concept | Approved term | Do not use |
+| --- | --- | --- |
+| A def of type `Air.Request() -> IO(Air.Response())` | handler | controller, action, endpoint function |
+| The handler that you give to `Air.serve` | app | application handler, root handler |
+| A method, a path pattern, and a handler | route | endpoint, path |
+| A value of type `List<Air.Route()>` | route list | route table, group, router |
+| The text of a route path, such as `/users/:id` | pattern | template, path spec |
+| A `:name` segment of a pattern and its value | path parameter | param (in prose), slug, variable |
+| A `*name` segment at the end of a pattern | wildcard | splat, catch-all, glob |
+| A key and value in the query string | query parameter | query arg, search param |
+| A def with `next` as its first handler parameter | middleware | wrapper, filter, interceptor, layer |
+| A middleware that takes a function instead of `next` | hook | callback, listener, event |
+| A def that returns a route list for one feature | plugin | module, extension, add-on |
+| A value that a middleware attaches to a request for later handlers | request local | context value, request attribute, decoration |
+| The shared value that every request carries | store | cache, database, global state |
+| A named map inside the store | namespace | bucket, table, section |
+
+## Errors and responses
+
+| Concept | Approved term | Do not use |
+| --- | --- | --- |
+| A value of type `Air.Error()` | error | exception, fault |
+| A response that carries an error and has no body yet | failed response | error response (before rendering), thrown error |
+| Turning a failed response into the response the client gets | render | format, serialize, handle |
+| A response that the server sends without running the app | server refusal | server error, rejection |
+| Sending a response to a request | respond | answer, reply, return (for HTTP) |
+| The value of `AIR_ENV`: `dev` or `prod` | mode | environment (for this value), stage, profile |
+
+## Server terms
+
+| Concept | Approved term | Do not use |
+| --- | --- | --- |
+| A byte cap on part of a request | limit | max, cap, quota |
+| A time cap in milliseconds on one phase | timeout | deadline (in prose), time limit |
+| The value that stops a `serve_until` server | stop switch | switch (alone), kill switch, signal |
+| Setting the stop switch to stop the server | flip | trigger, toggle, fire |
+| Finishing the requests in flight before a stop | drain | flush, shutdown |
+| The time a stopping server keeps serving before it stops accepting | drain delay | grace period, pre-stop delay |
+| A named condition that `/readyz` reports | readiness check | probe (for the condition), health check |
+| A value read from the environment or the `.env` file | setting | config value, option, parameter |
+| A proxy whose forwarding headers Air believes | trusted proxy | reverse proxy (alone), gateway |
+
+## Streaming and observability
+
+| Concept | Approved term | Do not use |
+| --- | --- | --- |
+| The task that sends a streamed body | producer | writer, emitter, generator |
+| One string that a producer sends | piece | chunk (except for the wire format), message, frame |
+| The number of pieces a stream channel holds | window | buffer size, capacity, room |
+| One timed unit of work in a trace | span | segment, event |
+| The function that receives each finished span | exporter | sink, reporter, collector |
+
+## Testing and checks
+
+| Concept | Approved term | Do not use |
+| --- | --- | --- |
+| A program under `tests/` that runs an app | test | spec, suite |
+| One `Air.Test.expect` call and its result | assertion | check (in tests), expectation |
+| A claim in `LAWS.bend` | law | property, invariant, rule |
+| Running `bend PROOF.bend` | proof gate | type check, verification |
+
+## General words
+
+| Approved | Do not use |
+| --- | --- |
+| use | utilize, leverage |
+| start | initiate, commence, spin up |
+| make sure | ensure, verify, confirm, check (as the reader's action) |
+| stop | kill (except for the `kill` command), terminate, halt |
+| for example | e.g. |
+| that is | i.e. |

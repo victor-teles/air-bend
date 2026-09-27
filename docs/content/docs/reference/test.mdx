@@ -1,0 +1,136 @@
+---
+title: Test reference
+description: The Air.Test defs that build raw requests, run an app without a socket, and print assertions, with their exact output and exit codes.
+---
+
+This page lists the `Air.Test` defs. A test is a Bend program with a
+`main` that runs an app on requests and checks the responses. No port
+opens. For a complete example, see [Test an app](/docs/guides/testing).
+
+## Build requests
+
+Each def returns a request as raw HTTP text.
+
+| Def | Returns |
+| --- | --- |
+| `Air.Test.get(target)` | `GET <target> HTTP/1.1` with `host: test` |
+| `Air.Test.post(target, content_type, body)` | `POST <target> HTTP/1.1` with `host: test`, `content-type`, `content-length` (the byte length of `body`), and `body` |
+| `Air.Test.with_header(name, value, raw)` | `raw` with one more header line at the end of the head |
+
+`target` is the path and the query, such as `/search?q=bend`. You can also
+write the raw text yourself:
+
+```python
+Air.Test.with_header("x-token", "secret", Air.Test.get("/admin/whoami"))
+"OPTIONS /items HTTP/1.1\r\nhost: test\r\n\r\n"
+```
+
+## Run the app
+
+### Air.Test.inject
+
+```python
+def Test.inject(app: Air.Handler(), raw: String) -> IO(Air.Response())
+```
+
+Runs `app` on the request `raw` with a new, empty store, and returns the
+response that the server would write. Air reads `raw` as the server reads
+a request:
+
+- Air parses the head with `Air.Limits.default()`. A head that the server
+  would refuse returns that server refusal, for example 400, 431, or 505.
+- Air cuts the body at its `Content-Length`. A body over the limit
+  returns 413. A body shorter than its `Content-Length` returns 400. The
+  server would wait for the rest instead.
+- Text with no blank line after the head returns 400.
+- Air settles the response as the server does: a failed response that no
+  `Air.on_error` rendered becomes the reason phrase in plain text, and
+  Air removes the value of `Air.Response.route`.
+
+### Air.Test.inject_shared
+
+```python
+def Test.inject_shared(app: Air.Handler(), store: Air.Store(), raw: String) -> IO(Air.Response())
+```
+
+Works like `Air.Test.inject`, with a store that you make with
+`Air.Store.new()`. Pass the same store to more than one call to keep state
+across requests, for example a counter, a session, or a rate limit.
+
+### Air.Test.body
+
+```python
+def Test.body(res: Air.Response()) -> IO(String)
+```
+
+Returns the body as a client reads it. For a streamed response, it reads
+pieces until the producer closes the channel, and returns them joined. A
+producer that sleeps between pieces makes the test wait as long.
+`Air.Response.body` returns `""` for a streamed response.
+
+## Assertions
+
+Each assertion prints one line and returns `True{}` when it passes.
+
+| Def | Passes when | Line on failure |
+| --- | --- | --- |
+| `Air.Test.expect(name, got, want)` | The strings are equal. | `not ok - <name>: want "<want>" got "<got>"` |
+| `Air.Test.expect_u32(name, got, want)` | The numbers are equal. | `not ok - <name>: want "404" got "200"` |
+| `Air.Test.expect_true(name, ok, note)` | `ok` is `True{}`. | `not ok - <name>: <note>` |
+
+When an assertion passes, it prints `ok - <name>`. `want` and `got` are
+printed as JSON strings, so Air escapes a quote or a line break.
+
+### Air.Test.finish
+
+```python
+def Test.finish(results: List<&2, Bool>) -> IO(Unit)
+```
+
+Prints the count of passed and failed assertions. When all passed, the
+program ends with code 0:
+
+```text
+2 passed, 0 failed
+```
+
+When one or more failed, `Air.Test.finish` prints `tests failed` and ends
+the process with code 1:
+
+```text
+1 passed, 1 failed
+tests failed
+```
+
+## A complete test
+
+```python title="tests/hello.bend"
+import Base
+import ../air.bend as Air
+import ../examples/hello/app.bend as Hello
+
+def greets() -> IO(Bool):
+  IO.bind(Air.Response(), Bool, Air.Test.inject(Hello.app, Air.Test.get("/hello/ada")),
+    res => Air.Test.expect("greets", Air.Response.body(res), "Olá, ada!"))
+
+def main() -> IO(Unit):
+  do IO<Unit>:
+    a : Bool <- greets()
+    Air.Test.finish([a])
+```
+
+## What a test does not simulate
+
+- Timeouts. There is no connection to watch.
+- Keep-alive and pipelining. Each call is one request.
+- `Expect: 100-continue`.
+- Chunked request bodies. The app gets the body as written, with the
+  chunk framing.
+
+Effects run for real. Request ids and session tokens are random, so check
+their format, not their value.
+
+## Related
+
+- [Test an app](/docs/guides/testing)
+- [Checks and CI](/docs/project/checks)

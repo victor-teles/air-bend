@@ -1,0 +1,350 @@
+---
+title: Server reference
+description: The defs that start an Air server, stop it, and set its limits and timeouts.
+---
+
+This page lists the defs that start and stop an Air server, and the types
+for its limits, timeouts, and stop switch. For the environment variables
+that set the same values, see the [Settings reference](/docs/reference/settings).
+
+## Choose a serve def
+
+| Def | Limits | Timeouts | Stops when | Store | Reads the environment |
+| --- | --- | --- | --- | --- | --- |
+| `Air.serve` | default | default | the process ends | new | no |
+| `Air.serve_with` | yours | default | the process ends | new | no |
+| `Air.serve_until` | yours | yours | the stop switch flips | new | no |
+| `Air.serve_shared` | yours | yours | the stop switch flips | yours | no |
+| `Air.serve_env` | from the environment | from the environment | the process ends | new | yes |
+| `Air.serve_env_until` | from the environment | from the environment | the stop switch flips | new | yes |
+
+Every serve def takes the app as a template argument, written `~app`. The
+app must be a closed term: a def, or a def applied to constants. Each
+connection runs as its own computation, so a slow client does not block
+the other clients. When the server cannot listen on the port, the process
+ends with an error.
+
+When the server starts, it prints:
+
+```text
+air: listening on http://localhost:8080
+```
+
+## Serve defs
+
+### Air.serve
+
+```python
+def serve(~app: Air.Handler(), +port: U32) -> IO(Unit)
+```
+
+Serves `app` on `port` with `Air.Limits.default()` and
+`Air.Timeouts.default()` until the process ends.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `app` | `Air.Handler()` | The app, as a template argument. |
+| `port` | `U32` | The TCP port, 1 to 65535. |
+
+```python
+def main() -> IO(Unit):
+  Air.serve(~app, 8080)
+```
+
+### Air.serve_with
+
+```python
+def serve_with(~app: Air.Handler(), +limits: Air.Limits(), +port: U32) -> IO(Unit)
+```
+
+Serves `app` on `port` with your limits and the default timeouts, until the
+process ends.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `app` | `Air.Handler()` | The app, as a template argument. |
+| `limits` | `Air.Limits()` | The byte limits on each request. |
+| `port` | `U32` | The TCP port. |
+
+```python
+Air.serve_with(~app, Air.Limits.new(16384, 100, 8192, 10485760), 8080)
+```
+
+### Air.serve_until
+
+```python
+def serve_until(~app: Air.Stoppable(), +limits: Air.Limits(), +timeouts: Air.Timeouts(), +switch: Air.Switch(), +port: U32) -> IO(Unit)
+```
+
+Serves `app` on `port` until `switch` flips. Then the server drains and
+`serve_until` returns. The app receives the stop switch, so a route can
+flip it.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `app` | `Air.Stoppable()` | The app. It takes the stop switch first, then the request. |
+| `limits` | `Air.Limits()` | The byte limits on each request. |
+| `timeouts` | `Air.Timeouts()` | The timeouts, including the drain timeout. |
+| `switch` | `Air.Switch()` | The stop switch, from `Air.Switch.new()`. |
+| `port` | `U32` | The TCP port. |
+
+When the stop switch flips, the server does these steps in order:
+
+1. It prints `air: stopping` and marks the store as draining. From now on,
+   `/readyz` responds with 503.
+2. It waits for the drain delay while it continues to serve. The drain
+   delay is 0 unless you set it with `Air.Ready.delay` or `AIR_DRAIN_DELAY`.
+   When the delay is not 0, it prints `air: draining for 5000 ms`.
+3. It stops accepting connections. A new request on an open connection
+   gets a 503 server refusal.
+4. It waits up to the drain timeout for the requests in flight, and then
+   returns.
+
+When all requests finish, the server prints `air: stopped`. When the
+drain timeout ends first, it prints `air: stopped with 2 in flight`.
+Connections that are idle between requests are not waited for.
+
+```python
+def stop(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
+  do IO<Air.Response()>:
+    Air.Switch.flip(switch)
+    return Air.Response.text("stopping")
+
+def app(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch([Air.Route.post("/stop", stop(switch))], req)
+
+def main() -> IO(Unit):
+  do IO<Unit>:
+    switch : Air.Switch() <- Air.Switch.new()
+    Air.serve_until(~app, Air.Limits.default(), Air.Timeouts.default(), switch, 8080)
+    Air.exit(0)
+```
+
+### Air.serve_shared
+
+```python
+def serve_shared(~app: Air.Stoppable(), +limits: Air.Limits(), +timeouts: Air.Timeouts(), +store: Air.Store(), +switch: Air.Switch(), +port: U32) -> IO(Unit)
+```
+
+Works like `Air.serve_until`, with a store that you make with
+`Air.Store.new()`. Use it when a task outside the server must read or
+write the same store as the handlers, for example a background
+readiness check.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `store` | `Air.Store()` | The store that every request carries. |
+
+The other parameters are the same as for `Air.serve_until`.
+
+### Air.serve_env
+
+```python
+def serve_env(~app: Air.Handler(), +port: U32) -> IO(Unit)
+```
+
+Serves `app` with every value from the environment, until the process
+ends. `Air.serve_env` does these steps:
+
+1. It loads the `.env` file from the working directory, if there is one.
+2. It puts the pairs of the file in a new store, in the `config`
+   namespace, for `Air.Config.get`.
+3. It reads the drain delay from `AIR_DRAIN_DELAY`.
+4. It reads the limits from `AIR_MAX_*`, the timeouts from
+   `AIR_TIMEOUT_*`, and the port from `PORT`.
+5. It serves the app.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `app` | `Air.Handler()` | The app, as a template argument. |
+| `port` | `U32` | The port to use when `PORT` is unset or empty. |
+
+When a variable has a value that is not a number, Air stops the process before it
+listens. See [Settings reference](/docs/reference/settings).
+
+```python
+def main() -> IO(Unit):
+  Air.serve_env(~app, 8080)
+```
+
+### Air.serve_env_until
+
+```python
+def serve_env_until(~app: Air.Stoppable(), switch: Air.Switch(), +port: U32) -> IO(Unit)
+```
+
+Works like `Air.serve_env`, and stops when `switch` flips, like
+`Air.serve_until`.
+
+### Air.exit
+
+```python
+def exit(code: U32) -> IO(Unit)
+```
+
+Ends the process with `code`, and ends every computation that is still
+waiting. Call it after `serve_until` returns, so that idle connections
+close.
+
+## Limits
+
+`Air.Limits()` holds the byte limits on each request. When a request goes
+over a limit, the server sends a server refusal and closes the connection.
+The app does not run.
+
+| Field | Default | Server refusal |
+| --- | --- | --- |
+| `head` | 16384 (16 KiB) | 431 |
+| `headers` | 100 header lines | 431 |
+| `url` | 8192 (8 KiB) | 414 |
+| `body` | 1048576 (1 MiB) | 413 |
+
+The `head` limit counts the request line and the headers. The `body`
+limit applies to `Content-Length` bodies and to the decoded size of
+chunked bodies.
+
+### Air.Limits.new
+
+```python
+def Limits.new(head: U32, headers: U32, url: U32, body: U32) -> Air.Limits()
+```
+
+Returns limits with the four values, in the order of the table in
+[Limits](#limits).
+
+### Air.Limits.default
+
+```python
+def Limits.default() -> Air.Limits()
+```
+
+Returns 16 KiB for the head, 100 header lines, 8 KiB for the URL, and 1 MiB
+for the body.
+
+### Air.Limits.from_env
+
+```python
+def Limits.from_env() -> IO(Air.Limits())
+```
+
+Reads `AIR_MAX_HEAD`, `AIR_MAX_HEADERS`, `AIR_MAX_URL`, and `AIR_MAX_BODY`.
+Each unset or empty variable takes its default. A value that is not a
+number stops the process.
+
+## Timeouts
+
+`Air.Timeouts()` holds six timeouts, in milliseconds. A timeout of 0 means
+no limit.
+
+| Field | Default | Covers | When it ends |
+| --- | --- | --- | --- |
+| `idle` | 15000 | The wait for the next request on an open connection | The connection closes. |
+| `head` | 10000 | The request line and headers, from their first byte | The connection closes. |
+| `body` | 30000 | The request body | The connection closes. |
+| `app` | 30000 | The app, from the call to the response | The client gets a 503 server refusal. |
+| `send` | 30000 | The write of the response, or of each streamed piece | The connection closes. |
+| `drain` | 10000 | The wait for requests in flight after the stop switch flips | The serve def returns. |
+
+When a timeout ends, the server prints a line such as
+`air: timeout: app`. When the app timeout ends, the handler continues to
+run in its own computation, but the server drops its response.
+
+### Air.Timeouts.new
+
+```python
+def Timeouts.new(idle: U32, head: U32, body: U32, app: U32, send: U32, drain: U32) -> Air.Timeouts()
+```
+
+Returns timeouts with the six values, in the order of the table in
+[Timeouts](#timeouts).
+
+### Air.Timeouts.default
+
+```python
+def Timeouts.default() -> Air.Timeouts()
+```
+
+Returns 15 s idle, 10 s head, 30 s body, 30 s app, 30 s send, and 10 s
+drain.
+
+### Air.Timeouts.from_env
+
+```python
+def Timeouts.from_env() -> IO(Air.Timeouts())
+```
+
+Reads `AIR_TIMEOUT_IDLE`, `AIR_TIMEOUT_HEAD`, `AIR_TIMEOUT_BODY`,
+`AIR_TIMEOUT_APP`, `AIR_TIMEOUT_SEND`, and `AIR_TIMEOUT_DRAIN`. Each unset
+or empty variable takes its default. A value that is not a number stops
+the process.
+
+## Stop switch
+
+### Air.Switch
+
+```python
+def Switch() -> Data
+```
+
+The type of the stop switch. The stop switch is a channel, so you can
+give it to a route and to a background task at the same time.
+
+### Air.Switch.new
+
+```python
+def Switch.new() -> IO(Air.Switch())
+```
+
+Returns a new stop switch that is not flipped.
+
+### Air.Switch.flip
+
+```python
+def Switch.flip(switch: Air.Switch()) -> IO(Unit)
+```
+
+Flips the stop switch. A server that `serve_until`, `serve_shared`, or
+`serve_env_until` started stops as described in
+[Air.serve_until](#airserve_until). A second flip has no effect.
+
+### Air.Stoppable
+
+```python
+def Stoppable() -> Type   # Air.Switch() -> Air.Handler()
+```
+
+The type of an app that receives the stop switch before the request.
+
+## Server refusals
+
+The server sends these responses without running the app. The body is
+the reason phrase as plain text, and the connection closes. The
+`Air.on_error` middleware does not see them, and `Air.log` does not log
+them. The server prints a line such as `? ? -> 431` for each one.
+
+| Status | Cause |
+| --- | --- |
+| 400 | A bad request line, header, path, or query; a bad `Content-Length`; both `Content-Length` and `Transfer-Encoding`; a malformed chunked body |
+| 413 | A body over the `body` limit |
+| 414 | A URL over the `url` limit |
+| 431 | A head over the `head` limit, or more header lines than the `headers` limit |
+| 501 | A `Transfer-Encoding` other than `chunked` |
+| 503 | The app timeout ended, or the server is stopping |
+| 505 | A version other than `HTTP/1.x` |
+
+## Connections
+
+- The server keeps a connection open for the next request unless the
+  client or the response asks to close it. An HTTP/1.0 client must send
+  `Connection: keep-alive` to keep it open.
+- The server reads pipelined requests from the same connection in order.
+- The server closes a connection after 100000 requests.
+- For a request with `Expect: 100-continue`, the server sends
+  `HTTP/1.1 100 Continue` before it reads the body.
+
+## Related
+
+- [Run Air in production](/docs/guides/deploy)
+- [Configure Air from the environment](/docs/guides/configuration)
+- [Settings reference](/docs/reference/settings)
+- [How a request moves through Air](/docs/concepts/lifecycle)

@@ -1,34 +1,99 @@
 ---
 title: Benchmarks
-description: Air against a Node server with the same routes.
+description: Measure Air against a Node server with the same routes, and compare a branch with its base the way CI does.
 ---
 
-`bench/run.sh` compares a native build of the example against a Node server
-with the same routes. See `bench/README.md` for the tool and current numbers.
+The `bench/` folder has the tools to measure Air. `bench/README.md` has
+the current and past numbers.
 
-## In CI
+| File | Does |
+| --- | --- |
+| `bench/bench.mjs` | A load generator in Node, with no dependencies |
+| `bench/reference.mjs` | A Node server with the same routes as `examples/hello` |
+| `bench/run.sh` | Builds hello natively, and measures Air and the Node server |
+| `bench/build.sh` | Builds hello natively from any checkout, on a port that you choose |
+| `bench/ab.sh` | Runs two builds in turns and writes `bench/out/ab.jsonl` |
+| `bench/compare.mjs` | Compares the two builds and fails under a threshold |
 
-On a pull request, CI builds the hello example from the base branch and
-from the pull request and runs them one after the other on the same
-runner, alternating for five rounds of five seconds each, on
-`GET /hello/:name` and a 1 KB `POST /echo`. A shared runner's speed
-changes from machine to machine, so CI compares the two builds with each
-other and keeps no stored numbers. The job fails when the pull request's
-median req/s on either route falls below 85% of the base's, and it
-writes the table to the run's summary.
+## Compare Air with Node
 
-Some changes are worth their cost, as the security headers were. Add the
-`bench-accepted` label to the pull request: the table is still reported,
-and the job passes.
+To measure Air and the Node server under the same load, run from the
+repository root:
 
-Locally, the same thing:
-
+```bash
+bench/run.sh 32 5
 ```
-bench/build.sh /path/to/base-checkout bench/out/hello-base
+
+The arguments are the number of connections and the seconds for each
+test. The defaults are 64 and 10. The script builds `examples/hello`
+natively, then measures `GET /hello/world` and a 1 KB `POST /echo` on
+both servers. To reuse the last build, set `SKIP_BUILD=1`.
+
+To measure one URL, run the load generator yourself:
+
+```bash
+node bench/bench.mjs --url http://localhost:8080/hello/world --conns 32 --seconds 10
+```
+
+`ECONNREFUSED` errors under high load mean that the listen backlog of the
+Bend runtime overflowed. They do not mean that an accepted request failed.
+
+## Compare a branch with its base
+
+CI compares each pull request with its base branch on the same machine.
+To do the same locally:
+
+1. Check out the base branch in another folder:
+
+```bash
+git worktree add ../base main
+```
+
+2. Build both versions of hello:
+
+```bash
+bench/build.sh ../base bench/out/hello-base
 bench/build.sh . bench/out/hello-head
-bench/ab.sh bench/out/hello-base bench/out/hello-head
-node bench/compare.mjs
 ```
 
-`HEADER="name: value"` adds a header to every request, for example a
-`traceparent` to measure continuing a trace instead of starting one.
+3. Run them in turns:
+
+```bash
+bench/ab.sh bench/out/hello-base bench/out/hello-head
+```
+
+4. Compare the results:
+
+```bash
+node bench/compare.mjs bench/out/ab.jsonl
+```
+
+`compare.mjs` prints a Markdown table with the median requests per
+second of each side. It exits with code 1 when the head is below 85% of
+the base on a route. `THRESHOLD` changes 0.85.
+
+To add a header to every request, set `HEADER`, for example
+`HEADER="traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"`.
+Use it to measure a request that continues a trace.
+
+## Benchmarks in CI
+
+On each pull request, CI builds hello from the base branch and from the
+pull request. It runs them in turns on the same runner, for five rounds of
+five seconds, with 32 connections, on `GET /hello/world` and a 1 KB
+`POST /echo`. The speed of a shared runner changes from machine to
+machine, so CI compares the two builds with each other and keeps no
+stored numbers.
+
+The job fails when the median requests per second of the pull request
+fall below 85% of the base on either route. It writes the table to the
+summary of the run.
+
+Some changes are worth their cost, as the security headers were. For such
+a change, add the `bench-accepted` label to the pull request. The job
+still reports the table, and it passes.
+
+## Related
+
+- [Checks and CI](/docs/project/checks)
+- [Run Air in production](/docs/guides/deploy)

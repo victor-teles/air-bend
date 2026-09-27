@@ -1,0 +1,388 @@
+---
+title: Build your first Air app
+description: Build a small notes API step by step, with routes, path parameters, JSON, errors, logging, and a test.
+---
+
+In this tutorial, you build a small notes API with Air. The API lists
+notes and returns one note by its id. At the end, you have:
+
+- an app in `notes/app.bend` and a server in `notes/main.bend`;
+- two routes, one with a path parameter;
+- JSON responses, and a 404 error that Air renders as JSON;
+- a request id and one log line for each request;
+- a test in `notes/test.bend` that runs the app without a network socket.
+
+Each step shows the complete file and the output that you get.
+
+## Before you start
+
+You need:
+
+- Bend 2.0.19 or later. To install Bend, follow the instructions at
+  [bend-lang.com](https://bend-lang.com). To see your version, run
+  `bend version`.
+- `curl`, to send requests.
+- A copy of the Air repository:
+
+```bash
+git clone https://github.com/victor-teles/air-bend.git
+cd air-bend
+```
+
+Run every command in this tutorial from the repository root, the folder
+that contains `air.bend`. The app imports Air with a relative path, so the
+`notes/` folder must be next to `air.bend`.
+
+## Step 1: Serve one route
+
+An Air app is a handler: a def that takes a request and returns
+`IO(Air.Response())`. Keep the app in `app.bend` and the server in
+`main.bend`. This split lets a test import the app later.
+
+1. Create the folder `notes/`.
+2. Create `notes/app.bend` with this content:
+
+```python title="notes/app.bend"
+import Base
+import ../air.bend as Air
+
+def home(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("Notes API"))
+
+def routes() -> List<Air.Route()>:
+  [Air.Route.get("/", home)]
+
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch(routes(), req)
+```
+
+3. Create `notes/main.bend` with this content:
+
+```python title="notes/main.bend"
+import Base
+import ../air.bend as Air
+import ./app.bend as Notes
+
+def main() -> IO(Unit):
+  Air.serve(~Notes.app, 8080)
+```
+
+4. Start the server:
+
+```bash
+bend notes/main.bend
+```
+
+Bend checks the program and then starts it. After about 10 seconds, the
+server prints:
+
+```text
+air: listening on http://localhost:8080
+```
+
+5. In a second terminal, send a request:
+
+```bash
+curl -i localhost:8080/
+```
+
+```text
+HTTP/1.1 200 OK
+connection: keep-alive
+content-type: text/plain; charset=utf-8
+content-length: 9
+
+Notes API
+```
+
+6. To stop the server, press `Ctrl+C` in the first terminal.
+
+`Air.Route.get` joins a path pattern to a handler. `Air.dispatch` runs the
+first route that matches the request. `Air.serve` takes the app with a `~`
+because the app is a template that the server copies for each connection.
+
+## Step 2: Read a path parameter
+
+A `:name` segment in a pattern is a path parameter. The handler reads its
+value with `Air.Request.param`.
+
+1. Replace `notes/app.bend` with this content:
+
+```python title="notes/app.bend"
+import Base
+import ../air.bend as Air
+
+def home(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("Notes API"))
+
+def show(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("note " ++ Air.Request.param(req, "id")))
+
+def routes() -> List<Air.Route()>:
+  [
+    Air.Route.get("/", home),
+    Air.Route.get("/notes/:id", show)
+  ]
+
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch(routes(), req)
+```
+
+2. Restart the server with `bend notes/main.bend`.
+3. Send a request:
+
+```bash
+curl localhost:8080/notes/42
+```
+
+```text
+note 42
+```
+
+## Step 3: Respond with JSON
+
+Now the app keeps two notes in a JSON object and returns them. When the
+id names no note, the handler returns an error with `Air.fail`. Bend has
+no exceptions, so an error is a value that the handler returns.
+
+1. Replace `notes/app.bend` with this content:
+
+```python title="notes/app.bend"
+import Base
+import ../air.bend as Air
+
+def notes() -> Air.Json():
+  Air.Json.obj([
+    Air.Json.field("1", Air.Json.of_str("Buy milk")),
+    Air.Json.field("2", Air.Json.of_str("Write the docs"))
+  ])
+
+def home(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("Notes API"))
+
+def list(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.of_json(notes()))
+
+def show.found(+id: String, found: Maybe<&2, Air.Json()>) -> IO(Air.Response()):
+  match found:
+    case Some{title}:
+      IO.pure(Air.Response(), Air.Response.of_json(Air.Json.obj([
+        Air.Json.field("id", Air.Json.of_str(id)),
+        Air.Json.field("title", title)
+      ])))
+    case None{}:
+      Air.fail(Air.Error.not_found("no note with id " ++ id))
+
+def show(req: Air.Request()) -> IO(Air.Response()):
+  +id = Air.Request.param(req, "id")
+  show.found(id, Air.Json.get(notes(), id))
+
+def routes() -> List<Air.Route()>:
+  [
+    Air.Route.get("/", home),
+    Air.Route.get("/notes", list),
+    Air.Route.get("/notes/:id", show)
+  ]
+
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch(routes(), req)
+```
+
+Bend has no `if`, so `show` passes the lookup result to a helper def,
+`show.found`, that matches on it. The `+` in `+id` lets the handler use
+`id` two times.
+
+2. Restart the server.
+3. Request all notes, one note, and a note that does not exist:
+
+```bash
+curl localhost:8080/notes
+curl localhost:8080/notes/1
+curl -i localhost:8080/notes/9
+```
+
+```text
+{"1":"Buy milk","2":"Write the docs"}
+{"id":"1","title":"Buy milk"}
+HTTP/1.1 404 Not Found
+connection: keep-alive
+content-type: text/plain; charset=utf-8
+content-length: 9
+
+Not Found
+```
+
+Without error middleware, the server renders the failed response as the
+plain reason phrase.
+
+## Step 4: Render errors as JSON
+
+`Air.on_error` is the middleware that renders failed responses.
+`Air.Error.json` renders them as JSON. `Air.Env.from_env()` reads the
+`AIR_ENV` variable: in `dev` mode, errors show their detail; in `prod`
+mode, they do not.
+
+1. In `notes/app.bend`, replace the `app` def with these three defs:
+
+```python title="notes/app.bend"
+def base(req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch(routes(), req)
+
+def app.fin(req: Air.Request(), env: Air.Env()) -> IO(Air.Response()):
+  Air.use([
+    Air.on_error(Air.Error.json(env))
+  ], base)(req)
+
+def app(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(Air.Env(), Air.Response(), Air.Env.from_env(), app.fin(req))
+```
+
+`base` is the old app. `Air.use` wraps `base` in a list of middleware.
+
+2. Restart the server and request the missing note:
+
+```bash
+curl localhost:8080/notes/9
+```
+
+```text
+{"status":404,"error":"Not Found"}
+```
+
+3. Stop the server. Start it again in `dev` mode:
+
+```bash
+AIR_ENV=dev bend notes/main.bend
+```
+
+4. Request the missing note again:
+
+```bash
+curl localhost:8080/notes/9
+```
+
+```text
+{"status":404,"error":"Not Found","detail":"no note with id 9","path":"/notes/9"}
+```
+
+## Step 5: Add request ids and logs
+
+`Air.request_id` gives each request an id and returns it in the
+`x-request-id` header. `Air.log` prints one JSON line for each request.
+The first middleware in the list runs first, so put `request_id` before
+`log`. Then each log line has the id.
+
+1. In `notes/app.bend`, replace `app.fin` with this def:
+
+```python title="notes/app.bend"
+def app.fin(req: Air.Request(), env: Air.Env()) -> IO(Air.Response()):
+  Air.use([
+    Air.request_id,
+    Air.log,
+    Air.on_error(Air.Error.json(env))
+  ], base)(req)
+```
+
+2. Restart the server with `bend notes/main.bend`. Bend now prints this
+   line before the server starts:
+
+```text
+All terms check, but 1 def relies on unsafe or foreign code:
+- main
+```
+
+You can ignore this message. `Air.log` reads the wall clock through a small
+piece of host code, and Bend reports each def that uses host code.
+
+3. Send two requests:
+
+```bash
+curl -i localhost:8080/notes/1
+curl localhost:8080/notes/9
+```
+
+```text
+HTTP/1.1 200 OK
+connection: keep-alive
+content-type: application/json
+x-request-id: 9be22d5900001c29
+content-length: 29
+
+{"id":"1","title":"Buy milk"}
+{"status":404,"error":"Not Found"}
+```
+
+The server terminal shows one line for each request. Your ids and times
+are different:
+
+```json
+{"ts":1790535040439,"id":"9be22d5900001c29","method":"GET","path":"/notes/1","status":200,"ms":0}
+{"ts":1790535040454,"id":"f7c9fa5d00001c37","method":"GET","path":"/notes/9","status":404,"ms":1}
+```
+
+## Step 6: Test the app
+
+`Air.Test.inject` runs an app on a request that you write as raw HTTP
+text. It opens no port. A test is a Bend program with a `main`.
+
+1. Stop the server.
+2. Create `notes/test.bend` with this content:
+
+```python title="notes/test.bend"
+import Base
+import ../air.bend as Air
+import ./app.bend as Notes
+
+def shows() -> IO(Bool):
+  IO.bind(Air.Response(), Bool, Air.Test.inject(Notes.app, Air.Test.get("/notes/1")),
+    res => Air.Test.expect("GET /notes/1 returns the note", Air.Response.body(res), "{\"id\":\"1\",\"title\":\"Buy milk\"}"))
+
+def missing() -> IO(Bool):
+  IO.bind(Air.Response(), Bool, Air.Test.inject(Notes.app, Air.Test.get("/notes/9")),
+    res => Air.Test.expect_u32("GET /notes/9 is 404", Air.Response.status(res), 404))
+
+def main() -> IO(Unit):
+  do IO<Unit>:
+    a : Bool <- shows()
+    b : Bool <- missing()
+    Air.Test.finish([a, b])
+```
+
+3. Run the test:
+
+```bash
+bend notes/test.bend
+```
+
+The app still logs each request, so the log lines appear between the
+results:
+
+```text
+{"ts":1790535052605,"id":"395f2b8e00001c27","method":"GET","path":"/notes/1","status":200,"ms":7}
+ok - GET /notes/1 returns the note
+{"ts":1790535052616,"id":"c9529d7d00001c33","method":"GET","path":"/notes/9","status":404,"ms":2}
+ok - GET /notes/9 is 404
+2 passed, 0 failed
+```
+
+The program exits with code 0. When an assertion fails, `Air.Test.finish`
+prints `tests failed` and exits with code 1:
+
+```text
+not ok - GET /notes/1 returns the note: want "{\"id\":\"1\",\"title\":\"Buy bread\"}" got "{\"id\":\"1\",\"title\":\"Buy milk\"}"
+```
+
+## What you built
+
+Your notes API has three routes, JSON responses, errors that render as
+JSON in both modes, a request id and a log line for each request, and a
+test. The same app layout is in `examples/hello/`, which uses more of Air.
+
+## Next steps
+
+- [Define routes](/docs/guides/routing): route lists, wildcards, and prefixes.
+- [Read request data](/docs/guides/requests): headers, query parameters, forms, and JSON bodies.
+- [Validate requests](/docs/guides/validation): check a JSON body against a schema.
+- [Store shared state](/docs/guides/shared-state): keep data between requests.
+- [Test an app](/docs/guides/testing): state across requests, streams, and CI.
+- [How a request moves through Air](/docs/concepts/lifecycle): what the server does around your handler.

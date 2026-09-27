@@ -1,21 +1,106 @@
 ---
-title: Not yet
-description: What Air does not do yet, and why.
+title: Limitations
+description: What Air does not do yet, why, and the workaround for each limitation.
 ---
 
-- Signals: Bend 2.0.10 has none, so a server stops from inside the process
-  (a route, a timer), not from `kill`. Bend also cannot cancel an effect, so
-  a timeout ends the request but not the receive under it: the socket of a
-  client that goes silent is closed when the client next sends or hangs up,
-  and until then it holds a descriptor. Bound it at a proxy if that matters.
-  A connection is closed after 100000 requests.
-- TLS: not planned in Air. Terminate it at a proxy (nginx, Caddy) and run
-  Air on localhost behind it.
-- Bodies are decoded as UTF-8 text by the runtime's `TCP.recv`. A
-  multi-byte character split across two receives comes through as
-  replacement characters, so binary uploads are not yet safe.
-- OTLP export: [`Air.trace`](/docs/guides/tracing) prints spans as JSON
-  lines for a collector to tail. Sending them to a collector over OTLP
-  needs an HTTP client built on `TCP.connect`, plus batching and
-  retries, run in a spawned task so it never blocks a request. Metrics
-  are scraped in the Prometheus format, not pushed.
+This page lists what Air does not do, why, and what to do instead. Most
+limitations come from the Bend runtime, version 2.0.19.
+
+## No signal handling
+
+**What does not work:** Bend has no signal handling. When the process
+gets `SIGTERM` or `SIGINT`, it ends at once, and requests in flight fail.
+
+**Workaround:** Stop the server from inside the process. Flip the stop
+switch from a route or a timer, and serve with `Air.serve_until` or
+`Air.serve_env_until`. The server then drains the requests in flight. See
+[Run Air in production](/docs/guides/deploy#stop-the-server-without-dropping-requests).
+
+## Silent clients hold a connection
+
+**What does not work:** Bend cannot cancel an effect. When a timeout ends
+a request, the receive under it continues. The connection of a client
+that stops sending stays open until the client sends again or closes the
+connection. Until then, it holds a file descriptor.
+
+**Workaround:** Set a client timeout on the proxy in front of Air, so the
+proxy closes silent connections.
+
+## No TLS
+
+**What does not work:** Air serves plain HTTP only. TLS is not planned.
+
+**Workaround:** End TLS at a proxy, such as nginx or Caddy, and run Air
+on the same machine behind it. See
+[Put a TLS proxy in front of Air](/docs/guides/deploy#put-a-tls-proxy-in-front-of-air).
+
+## No binary bodies or files
+
+**What does not work:** The `TCP.recv` of the Bend runtime decodes bytes
+as UTF-8 text. A multi-byte character that two receives split arrives as
+replacement characters. Air also reads files as UTF-8 text. So binary
+uploads, images, and other binary files are not safe.
+
+**Workaround:** Serve images and other binary files from the proxy or a
+CDN. Accept binary uploads in another service.
+
+## Large files are cut
+
+**What does not work:** Air reads at most 64 MiB of a file, in reads of
+64 KiB. A larger file is cut short.
+
+**Workaround:** Serve large files from the proxy or a CDN.
+
+## A small listen backlog
+
+**What does not work:** The Bend runtime listens with a backlog of 16
+connections. Under a high number of new connections at the same time,
+the kernel refuses some of them with `ECONNREFUSED`.
+
+**Workaround:** Put a proxy in front of Air that keeps connections to Air
+open and reuses them.
+
+## No client address without a proxy
+
+**What does not work:** `TCP.accept` in Bend gives no peer address. So
+`Air.Request.client_ip` returns `None`, and `Air.Rate.by_ip` puts all
+clients in one bucket.
+
+**Workaround:** Run Air behind a proxy that sets `X-Forwarded-For`, and
+pass `Air.Trust.proxy()`. See
+[Trust the proxy headers](/docs/guides/deploy#trust-the-proxy-headers).
+
+## No span export over OTLP
+
+**What does not work:** `Air.trace` prints spans as JSON lines. It cannot
+send them to a collector over OTLP. That needs an HTTP client on
+`TCP.connect`, with batching and retries, in a task that never blocks a
+request.
+
+**Workaround:** Let an OpenTelemetry Collector read the JSON lines from
+the log, for example with the filelog receiver. Metrics use the
+Prometheus format, which a scraper pulls. See
+[Trace requests](/docs/guides/tracing).
+
+## State lives in one process
+
+**What does not work:** The store, sessions, rate limits, and metrics are
+in the memory of one process. A restart removes them, and two instances
+do not share them.
+
+**Workaround:** Keep data that must last in a database. Scrape metrics
+from every instance.
+
+## Limits on one connection or stream
+
+**What does not work:** The server closes a connection after 100000
+requests, and a stream after 1000000 pieces.
+
+**Workaround:** Clients open a new connection automatically. For a
+stream that must run longer, have the client connect again, as Server-Sent
+Events clients do.
+
+## Related
+
+- [Run Air in production](/docs/guides/deploy)
+- [How Bend shapes Air](/docs/concepts/bend)

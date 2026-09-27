@@ -1,0 +1,183 @@
+---
+title: Errors reference
+description: The Air error type, every error constructor with its status, the renderers, and the defs that return and render errors.
+---
+
+This page lists the defs for errors in Air. Bend has no exceptions, so an
+error is a value: a handler returns a failed response, and the
+`Air.on_error` middleware renders it. For a task-based introduction, see
+[Handle errors](/docs/guides/errors).
+
+## Error constructors
+
+Each constructor takes a detail string for the developer. The renderers
+show the detail only in `dev` mode.
+
+| Def | Status | Reason phrase |
+| --- | --- | --- |
+| `Air.Error.bad_request(detail)` | 400 | `Bad Request` |
+| `Air.Error.unauthorized(detail)` | 401 | `Unauthorized` |
+| `Air.Error.forbidden(detail)` | 403 | `Forbidden` |
+| `Air.Error.not_found(detail)` | 404 | `Not Found` |
+| `Air.Error.conflict(detail)` | 409 | `Conflict` |
+| `Air.Error.gone(detail)` | 410 | `Gone` |
+| `Air.Error.too_large(detail)` | 413 | `Content Too Large` |
+| `Air.Error.unsupported(detail)` | 415 | `Unsupported Media Type` |
+| `Air.Error.unprocessable(detail)` | 422 | `Unprocessable Content` |
+| `Air.Error.too_many(detail)` | 429 | `Too Many Requests` |
+| `Air.Error.internal(detail)` | 500 | `Internal Server Error` |
+| `Air.Error.not_implemented(detail)` | 501 | `Not Implemented` |
+| `Air.Error.unavailable(detail)` | 503 | `Service Unavailable` |
+| `Air.Error.other(status, detail)` | `status` | From the table of known statuses, or `Unknown` |
+
+## Reading an error
+
+| Def | Returns |
+| --- | --- |
+| `Air.Error.status(e)` | The status, as `U32`. |
+| `Air.Error.detail(e)` | The detail string. |
+| `Air.Error.reason(e)` | The reason phrase, such as `Not Found`. |
+
+## Returning an error
+
+### Air.fail
+
+```python
+def fail(e: Air.Error()) -> IO(Air.Response())
+```
+
+Returns a failed response for `e`, wrapped in `IO`. A handler returns it.
+
+```python
+def show(req: Air.Request()) -> IO(Air.Response()):
+  Air.fail(Air.Error.not_found("no such user"))
+```
+
+`Air.Response.fail(e)` is the same failed response without `IO`.
+`Air.Response.error(r)` returns the error of a failed response that is
+not rendered yet.
+
+### Air.attempt
+
+```python
+def attempt(-A: Type, act: IO(Result<&1, &1, U32 & String, A>), k: A -> IO(Air.Response())) -> IO(Air.Response())
+```
+
+Runs an effect that can fail, such as `IO.get_env`. When the effect
+succeeds, `Air.attempt` gives its value to `k`. When the effect fails,
+`Air.attempt` returns a failed 500 response with the effect's message as
+the detail.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `A` | `Type` | The type of the value of the effect. |
+| `act` | `IO(Result<&1, &1, U32 & String, A>)` | The effect. |
+| `k` | `A -> IO(Air.Response())` | The def that makes the response from the value. |
+
+```python
+def env.fin(home: String) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("home is " ++ home))
+
+def env(req: Air.Request()) -> IO(Air.Response()):
+  Air.attempt(String, IO.get_env("HOME"), env.fin)
+```
+
+<Callout type="warn">
+Do not call `IO.try` or `IO.die` in a handler. Both end the process, and
+no middleware can stop them. Use `Air.attempt` instead.
+</Callout>
+
+## Rendering errors
+
+### Air.on_error
+
+```python
+def on_error(render: Air.Render(), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Runs `next`. When the response is a failed response, `Air.on_error` calls
+`render` with the request and the error, and returns the result. The
+result keeps the headers and cookies of the failed response, such as the
+`allow` header of a 405. When the renderer sets the same header, the
+renderer's value wins.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `render` | `Air.Render()` | `Air.Request() -> Air.Error() -> Air.Response()`. Use `Air.Error.plain(env)`, `Air.Error.json(env)`, or your own def. |
+
+`Air.on_error` renders the 404 and 405 responses of `Air.dispatch`, and
+every other failed response inside it.
+
+### Air.Error.plain
+
+```python
+def Error.plain(+env: Air.Env(), req: Air.Request(), e: Air.Error()) -> Air.Response()
+```
+
+Renders the error as `text/plain; charset=utf-8`.
+
+| Mode | Body for `Air.Error.not_found("no note with id 9")` on `GET /notes/9` |
+| --- | --- |
+| `prod` | `Not Found` |
+| `dev` | `Not Found`, then `GET /notes/9`, then `no note with id 9`, each on its own line |
+
+### Air.Error.json
+
+```python
+def Error.json(+env: Air.Env(), req: Air.Request(), e: Air.Error()) -> Air.Response()
+```
+
+Renders the error as `application/json`.
+
+| Mode | Body |
+| --- | --- |
+| `prod` | `{"status":404,"error":"Not Found"}` |
+| `dev` | `{"status":404,"error":"Not Found","detail":"no note with id 9","path":"/notes/9"}` |
+
+### A custom renderer
+
+A renderer is a def of type `Air.Render()`. Pass it to `Air.on_error`
+with its settings applied:
+
+```python
+def html_error(+env: Air.Env(), req: Air.Request(), e: Air.Error()) -> Air.Response():
+  +e = e
+  Air.Response.with_status(
+    Air.Response.html("<h1>" ++ Air.Error.reason(e) ++ "</h1>"),
+    Air.Error.status(e))
+```
+
+## Mode
+
+`Air.Env()` is the mode: `dev` or `prod`. It decides whether the
+renderers show the detail and the path.
+
+| Def | Returns |
+| --- | --- |
+| `Air.Env.dev()` | `dev` mode. |
+| `Air.Env.prod()` | `prod` mode. |
+| `Air.Env.from_env()` | `IO(Air.Env())`: `dev` when the `AIR_ENV` variable is `dev`, else `prod`. |
+
+The app is a closed template, so it reads the mode for each request:
+
+```python
+def app.fin(req: Air.Request(), env: Air.Env()) -> IO(Air.Response()):
+  Air.use([Air.on_error(Air.Error.json(env))], base)(req)
+
+def app(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(Air.Env(), Air.Response(), Air.Env.from_env(), app.fin(req))
+```
+
+## Responses that Air.on_error does not render
+
+| Response | Why |
+| --- | --- |
+| Server refusals, such as 431, 413, and the 503 of the app timeout | The server sends them before or instead of the app. See the [Server reference](/docs/reference/server#server-refusals). |
+| The 422 of `Air.validate_json`, `Air.validate_query`, and `Air.validate_params` | It is not a failed response. So the client gets the list of problems in `prod` mode too. |
+| A failed response when the app has no `Air.on_error` | The server renders it in `prod` style: the reason phrase as plain text. The detail never reaches the client. |
+
+## Related
+
+- [Handle errors](/docs/guides/errors)
+- [Middleware reference](/docs/reference/middleware)
+- [Response reference](/docs/reference/response)

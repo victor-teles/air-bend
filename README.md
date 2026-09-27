@@ -23,27 +23,31 @@ def main() -> IO(Unit):
   Air.serve(~app, 8080)
 ```
 
-```
+To run the starter example from the repository root:
+
+```bash
 bend examples/hello/main.bend
 curl localhost:8080/hello/world
 ```
 
 ## Documentation
 
-The guides live in `docs/`, a Next.js + Fumadocs site:
+The documentation site is in `docs/`. To read it locally:
 
-```
-cd docs && pnpm install && pnpm dev
+```bash
+cd docs
+pnpm install
+pnpm dev
 ```
 
-Then open http://localhost:3000/docs. Pages are MDX under
-`docs/content/docs/`: middleware, request ids and logging, shared state,
-sessions, rate limiting, validation, templates, static files, CORS and
-security headers, errors, testing, and what Air does not do yet.
+Then open http://localhost:3000/docs. To learn Air, start with the
+tutorial, [Build your first Air app](docs/content/docs/tutorial/first-app.mdx).
 
 ## Checks
 
-`bend PROOF.bend` proves the laws in `LAWS.bend`. It must print
-"All terms check." before a commit. `bend tests/hello.bend` and
-`bend tests/dashboard.bend` run the examples in-process and exit 1 on a
-failed check.
+Run these checks from the repository root before you commit:
+
+- `bend PROOF.bend` proves the laws in `LAWS.bend`. It must print
+  `All terms check.`
+- `bend tests/hello.bend` and `bend tests/dashboard.bend` run the example
+  apps in-process. Each exits with code 1 when an assertion fails.

@@ -1,23 +1,89 @@
 ---
-title: Request ids and logging
-description: Give every request an id and print one JSON line per request.
+title: Add request ids and logs
+description: Give each request an id that the client gets back, and print one JSON log line for each request, with Air.request_id and Air.log.
 ---
 
-`Air.request_id` gives every request an id, the client's `X-Request-Id`
-when it is safe to print (letters, digits, `-`, `_`, `.`; up to 128) or
-16 hex characters from a random word and the millisecond it started,
-and returns it as `x-request-id`. Handlers
-read it with `Air.Request.id`. `Air.log`, placed inside it, prints one
-JSON line per request:
+`Air.request_id` gives each request an id and sends it back in the
+`x-request-id` header. `Air.log` prints one JSON line for each request.
+Together, they let you find the log line of any response.
 
-```json
-{"ts":1790298403006,"id":"a9bf17ed00001429","method":"GET","path":"/","status":200,"ms":1}
+## Add ids and logs to an app
+
+To add both, put `Air.request_id` before `Air.log` in `Air.use`:
+
+```python
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.use([Air.request_id, Air.log], base)(req)
 ```
 
-`ts` is the time the request started, in milliseconds since the Unix
-epoch. It comes from Air's wall clock, `Air.Clock.wall_ms()`. Before
-Air had a wall clock, `ts` counted milliseconds since the process
-started. With [`Air.trace`](/docs/guides/tracing) outside `log`, the
-line also has a `"trace_id"` field after `"id"`. The server prints its own line
-only for what the app never sees: a bad request line, a limit, the 503
-on a timeout.
+`Air.request_id` must come first, so that the log line has the id.
+
+```bash
+curl -i localhost:8080/notes/1
+```
+
+```text
+HTTP/1.1 200 OK
+connection: keep-alive
+content-type: application/json
+x-request-id: 9be22d5900001c29
+content-length: 29
+
+{"id":"1","title":"Buy milk"}
+```
+
+The server prints:
+
+```json
+{"ts":1790535040439,"id":"9be22d5900001c29","method":"GET","path":"/notes/1","status":200,"ms":0}
+```
+
+## Read the log line
+
+| Field | Value |
+| --- | --- |
+| `ts` | The start of the request, in milliseconds since the Unix epoch |
+| `id` | The request id |
+| `trace_id` | The trace id. This field is present only with `Air.trace` outside `Air.log`. See [Trace requests](/docs/guides/tracing). |
+| `method` | The request method |
+| `path` | The path, in its normal form |
+| `status` | The status of the response |
+| `ms` | The milliseconds that the app took |
+
+Put `Air.on_error` after `Air.log` in the list. Then the `status` field
+is the status of the rendered error.
+
+## Keep the id from a proxy
+
+When the client or a proxy sends an `X-Request-Id` header, Air uses that
+id if it is safe to print: 1 to 128 characters, each a letter, a digit,
+`-`, `_`, or `.`. Otherwise, Air makes an id of 16 hex characters from a
+random number and the start time.
+
+## Read the id in a handler
+
+To read the id, call `Air.Request.id`:
+
+```python
+def show(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("request " ++ Air.Request.id(req)))
+```
+
+It returns `""` without `Air.request_id`.
+
+## Logs that the server prints
+
+`Air.log` logs only the requests that reach the app. The server prints its
+own line for a request that the app never sees, such as a bad request
+line, a request over a limit, or the 503 of an app timeout:
+
+```text
+? ? -> 431
+air: timeout: app
+```
+
+## Related
+
+- [Middleware reference](/docs/reference/middleware#request-ids-and-logs)
+- [Trace requests](/docs/guides/tracing)
+- [Add health checks](/docs/guides/health#keep-probes-out-of-the-log)

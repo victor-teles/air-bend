@@ -1,0 +1,169 @@
+---
+title: How Bend shapes Air
+description: The Bend rules behind the Air design, from closed templates and affine values to errors as values and the laws in LAWS.bend.
+---
+
+Air looks different from a web framework in JavaScript or Python. Most of
+the differences come from Bend, the language Air is written in. This page
+explains the Bend rules behind the Air design, so that the patterns in the
+guides make sense.
+
+## Values are used one time
+
+In Bend, most values are affine: a program can use each one at most one
+time. The checker enforces this rule. A handler parameter is affine, so
+this handler does not check, because it uses `req` two times:
+
+```python
+def show(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text(Air.Request.path(req) ++ Air.Request.header(req, "host")))
+```
+
+A `+` makes a value that the program can copy. So a handler that reads the
+request more than one time rebinds it first:
+
+```python
+def show(req: Air.Request()) -> IO(Air.Response()):
+  +req = req
+  IO.pure(Air.Response(), Air.Response.text(Air.Request.path(req) ++ Air.Request.header(req, "host")))
+```
+
+A do-block binding such as `store : Air.Store() <- Air.Store.new()` is
+also affine. To use it two times, pass it to a def that rebinds it with
+`+`.
+
+## Route lists are defs
+
+A handler is a function, and Bend cannot copy a function. So a handler
+can run only one time. For this reason, a route list is a def, such as
+`def routes() -> List<Air.Route()>`, and the app calls it for each
+request. Each request gets new handlers.
+
+The same rule explains why `next` in a middleware runs at most one time,
+and why a middleware can drop `next` at no cost. The checker proves that
+no middleware calls the rest of the chain two times.
+
+## The app is a closed template
+
+`Air.serve(~app, 8080)` takes the app as a template argument, marked with
+`~`. The server makes a copy of the template for each connection. A
+template must be a closed term: a def, or a def applied to constants. It
+cannot use a local variable of `main`.
+
+This rule has three results in Air:
+
+- A value that `main` reads, such as a setting, cannot reach the app.
+  Handlers read settings with `Air.Config.get` instead.
+- `Air.Route.wrap(~mw, routes)` also takes a template, because it copies
+  the middleware for each route. Pass `~auth("secret")`, not a variable.
+- The app reads the mode with `Air.Env.from_env()` for each request,
+  instead of one time in `main`.
+
+## State goes through the request
+
+Bend has no global variables, and the app is a closed template, so `main`
+cannot give state to the app. Instead, the server makes one store and
+puts it on each request. Handlers read and write the store through the
+request, with `Air.Store.get(req, ns, key)` and the other store defs.
+
+The store is a channel with one slot. To take the value out of the slot is
+to take the lock, and to put it back is to release it. So each store
+operation is atomic, and a long update makes every other request wait.
+See [Store shared state](/docs/guides/shared-state).
+
+## Errors are values
+
+Bend has no exceptions. A handler that fails returns a failed response,
+and `Air.on_error` renders it. Two Bend effects end the whole process:
+`IO.try` on a failure, and `IO.die`. A handler must not call them. For an
+effect that can fail, `Air.attempt` turns the failure into a 500
+response. See [Handle errors](/docs/guides/errors).
+
+## There is no if
+
+Bend has no `if` expression. To branch on a computed `Bool`, pass it to a
+helper def that matches on its parameter:
+
+```python
+def auth.go(next: Air.Handler(), req: Air.Request(), ok: Bool) -> IO(Air.Response()):
+  match ok:
+    case True{}:
+      next(req)
+    case False{}:
+      Air.fail(Air.Error.unauthorized("bad token"))
+```
+
+This is why the guides show many small defs named `name.go` and
+`name.fin`.
+
+## There is no hook registry
+
+Frameworks such as Fastify keep a list of callbacks and call each one for
+each request. Bend cannot copy a function, so such a list cannot serve
+more than one request. In Air, a hook is a middleware, and its place in
+the list is its phase. See [Add lifecycle hooks](/docs/guides/hooks).
+
+## Timeouts are races
+
+Bend cannot cancel an effect and has no receive with a time limit. So Air
+runs a timeout as a race: the effect reports on a channel, and a watchdog
+reports on the same channel when the time is up. The first report wins.
+The effect that loses continues to run until it ends. For this reason, a
+handler that times out still runs after the client gets its 503.
+
+Each connection has one watchdog, and Air sets it again for each phase of
+a request. The event loop of Bend checks every waiting task on each wait,
+so a watchdog for each request would slow the server down.
+
+## The facade and the air/lib folder
+
+`air.bend` is the facade: the names that apps use, such as
+`Air.Request.query`. The code is in modules under `air/lib/`. Bend
+imports are not transitive, so the facade defines a small wrapper for
+each public name.
+
+The modules are one folder down for a reason. The C backend of Bend names
+each def by its path, with each punctuation mark as `_`. The facade name
+`air.Json.parse` and a module def `air/json.parse` would get the same C
+name, and the native build would fail. `air/lib/json.parse` cannot
+collide with a facade name.
+
+## The wall clock is a custom effect
+
+Bend has `IO.now`, which counts milliseconds from the start of the
+process, but no wall clock. Air adds one custom effect, `Air.Clock.wall_ms`,
+with host code in C and JavaScript. `Air.log`, `Air.trace`, and other
+defs use it. Because of this effect, Bend prints a note that some defs
+rely on foreign code. The note is expected.
+
+## Laws and proofs
+
+`LAWS.bend` holds about 400 laws: claims about Air, written as equalities
+between a computation and its expected result. For example:
+
+```python
+law segments_drop_empty:
+  {Text.segments("/users//42/") == ["users", "42"] : List<&2, String>}
+```
+
+`PROOF.bend` proves each law. For these laws, the proof is `{==}`: the
+checker computes both sides and makes sure that they are equal. So each
+law is a test that runs at type-check time. `bend PROOF.bend` must print
+`All terms check.` before each commit.
+
+The laws cover every area of Air: routing and methods, path decoding,
+body framing and connections, JSON, forms, cookies and content
+negotiation, files and streaming, timeouts and draining, middleware and
+errors, CORS and security headers, the store, rate limits, sessions,
+schemas, templates, the test harness, settings, hooks, health checks,
+OpenAPI, metrics, and trace context.
+
+A law cannot run `IO`. For behavior that needs effects, such as a full
+request through a middleware chain, the tests in `tests/` run the example
+apps with `Air.Test`. See [Checks and CI](/docs/project/checks).
+
+## Related
+
+- [How a request moves through Air](/docs/concepts/lifecycle)
+- [Build your first Air app](/docs/tutorial/first-app)
+- The Bend guide: run `bend guide`

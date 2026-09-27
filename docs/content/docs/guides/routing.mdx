@@ -1,0 +1,186 @@
+---
+title: Define routes
+description: Add routes for each HTTP method, read path parameters and wildcards, split routes into route lists, mount them under a prefix, and catch duplicate routes at startup.
+---
+
+A route joins an HTTP method and a pattern to a handler. `Air.dispatch`
+runs the first route that matches a request. This guide shows the common
+routing tasks. For every def and rule, see the
+[Routing reference](/docs/reference/routing).
+
+## Add a route
+
+To add a route, call the constructor for its method with a pattern and a
+handler, and put the route in a route list:
+
+```python
+def list_users(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.json("[]"))
+
+def create_user(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.with_status(Air.Response.json("{}"), 201))
+
+def routes() -> List<Air.Route()>:
+  [
+    Air.Route.get("/users", list_users),
+    Air.Route.post("/users", create_user)
+  ]
+
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch(routes(), req)
+```
+
+The constructors are `Air.Route.get`, `post`, `put`, `delete`, `patch`,
+`head`, and `options`. Keep the route list in a def. Air calls the def
+again for each request, because a handler can run only one time.
+
+## Read a path parameter
+
+A `:name` segment matches any one segment of the path. To read its value,
+call `Air.Request.param`:
+
+```python
+def show_user(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("user " ++ Air.Request.param(req, "id")))
+
+Air.Route.get("/users/:id", show_user)
+```
+
+```bash
+curl localhost:8080/users/7
+```
+
+```text
+user 7
+```
+
+Air decodes percent escapes before it matches, so `/users/ada%20lovelace`
+binds `id` to `ada lovelace`. Path parameters are strings. To check that a
+parameter is a number, see [Validate requests](/docs/guides/validation).
+
+## Match the rest of a path with a wildcard
+
+A `*name` segment at the end of a pattern matches the rest of the path,
+including slashes. It can match nothing.
+
+```python
+def show_file(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("[" ++ Air.Request.param(req, "path") ++ "]"))
+
+Air.Route.get("/files/*path", show_file)
+```
+
+| Request | `path` |
+| --- | --- |
+| `/files/css/app.css` | `css/app.css` |
+| `/files/` | `""` |
+| `/files` | `""` |
+
+A wildcard must be the last segment. To serve a folder of files, use
+`Air.static` on a wildcard route. See
+[Serve static files](/docs/guides/static-files).
+
+## Split routes into route lists
+
+To keep each feature in its own def, write one route list for each
+feature. Then join them with `Air.Route.all`:
+
+```python
+def pages() -> List<Air.Route()>:
+  [Air.Route.get("/", home)]
+
+def api() -> List<Air.Route()>:
+  [Air.Route.get("/users", list_users)]
+
+def routes() -> List<Air.Route()>:
+  Air.Route.all([pages(), api()])
+```
+
+Air tries the routes in order, so the routes of `pages()` come before the
+routes of `api()`.
+
+## Mount a route list under a prefix
+
+To put a route list under a path prefix, call `Air.Route.mount`:
+
+```python
+def routes() -> List<Air.Route()>:
+  Air.Route.all([pages(), Air.Route.mount("/api", api())])
+```
+
+Now `/users` in `api()` responds at `/api/users`. The prefix can contain
+path parameters, such as `/orgs/:org`. Do not put a wildcard in a prefix.
+
+## Apply middleware to one route list
+
+To run a middleware only for the routes in one route list, call
+`Air.Route.wrap`:
+
+```python
+Air.Route.mount("/admin", Air.Route.wrap(~auth("secret"), admin()))
+```
+
+The middleware is a template argument, so it must be a def or a def
+applied to constants. See [Write middleware](/docs/guides/middleware).
+
+## Catch duplicate routes at startup
+
+Air runs the first route that matches. A second route with the same method
+and pattern never runs, and Air gives no warning. To find these problems
+before the server starts, call `Air.Route.check` in `main`:
+
+```python
+def main() -> IO(Unit):
+  do IO<Unit>:
+    Air.Route.check(routes())
+    Air.serve(~app, 8080)
+```
+
+When there is a problem, `Air.Route.check` prints it and ends the process
+with code 1:
+
+```text
+air: duplicate route: GET /users/:
+air: routes conflict
+```
+
+Air ignores the names of path parameters when it compares patterns, so
+`/users/:id` and `/users/:name` are duplicates.
+
+## Choose what a trailing slash means
+
+By default, `Air.dispatch` treats `/users/` and `/users` as the same path.
+To change this, call `Air.dispatch_with` with a policy:
+
+```python
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch_with(Air.Slash.redirect(), routes(), req)
+```
+
+| Policy | Result for `/users/` |
+| --- | --- |
+| `Air.Slash.ignore()` | Matches `/users`. This is the default. |
+| `Air.Slash.strict()` | Matches only a pattern that ends with `/`. |
+| `Air.Slash.redirect()` | 308 to `/users`, with the query kept. |
+
+## Responses for unmatched requests
+
+`Air.dispatch` makes these responses when no route handles the request.
+You do not write routes for them.
+
+| Request | Response |
+| --- | --- |
+| No route matches the path. | 404 |
+| Routes match the path, but not the method. | 405 with `allow: GET, HEAD, OPTIONS` |
+| `HEAD`, with a `GET` route for the path | The `GET` route runs, and the server sends no body. |
+| `OPTIONS`, with no `OPTIONS` route | 204 with an `allow` header |
+
+The 404 and 405 are failed responses, so `Air.on_error` renders them like
+your own errors. See [Handle errors](/docs/guides/errors).
+
+## Related
+
+- [Routing reference](/docs/reference/routing)
+- [Write middleware](/docs/guides/middleware)
+- [Package routes as a plugin](/docs/guides/plugins)
+- [Read request data](/docs/guides/requests)

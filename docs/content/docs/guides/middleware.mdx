@@ -1,26 +1,145 @@
 ---
-title: Middleware
-description: Run code before and after a handler, or answer without calling it.
+title: Write middleware
+description: Write an Air middleware that runs code around a handler, passes values to it, or responds without it, and apply the middleware where you need it.
 ---
 
-A middleware is a def with the next handler first. It runs code before
-and after `next`, or answers without calling it, which ends the chain.
+A middleware wraps a handler. It can run code before and after the
+handler, pass values to the handler, or respond without calling the
+handler. This guide builds an `auth` middleware that checks a token. For
+the built-in middleware, see the
+[Middleware reference](/docs/reference/middleware).
+
+## The shape of a middleware
+
+A middleware is a def with the next handler as its first handler
+parameter, and the request after it:
 
 ```python
 def timing(next: Air.Handler(), req: Air.Request()) -> IO(Air.Response()):
-  +req = req
   do IO<Air.Response()>:
     before : Nat <- IO.now()
     res : Air.Response() <- next(req)
-    ...log the elapsed time, return res...
-
-def auth(+token: String, next: Air.Handler(), req: Air.Request()) -> IO(Air.Response()):
-  ...call next(Air.Request.with_local(req, "user", name)) or answer 401...
+    after : Nat <- IO.now()
+    IO.print("took " ++ Nat.show(Nat.sub(after, before)) ++ " ms")
+    return res
 ```
 
-`Air.use([timing], base)` wraps the whole app, the first in the list
-outermost. `Air.Route.wrap(~auth("secret"), admin())` wraps a group; the
-middleware there is a template argument, so it must be a def or a def
-applied to constants. A single route takes `auth("secret")(handler)`.
-Middleware leaves values for handlers with `Air.Request.with_local`, read
-with `Air.Request.local`. See `examples/hello/main.bend`.
+`timing` is a middleware, and `timing(handler)` is a handler. The code
+before `next(req)` runs before the handler. The code after it runs after
+the handler.
+
+## Take a setting
+
+A middleware can take settings. Put them before `next`:
+
+```python
+def auth(+token: String, next: Air.Handler(), req: Air.Request()) -> IO(Air.Response()):
+  ...
+```
+
+Now `auth("secret")` is a middleware. The `+` lets the body use `token`
+more than one time.
+
+## Respond without calling the handler
+
+To stop a request, return a response and do not call `next`. Bend has no
+`if`, so pass the result of the comparison to a helper def that matches
+on it:
+
+```python
+def auth.go(next: Air.Handler(), req: Air.Request(), ok: Bool) -> IO(Air.Response()):
+  match ok:
+    case True{}:
+      next(Air.Request.with_local(req, "user", "victor"))
+    case False{}:
+      Air.fail(Air.Error.unauthorized("x-token missing or wrong"))
+
+def auth(+token: String, next: Air.Handler(), req: Air.Request()) -> IO(Air.Response()):
+  +req = req
+  auth.go(next, req, String.eq(Air.Request.header(req, "x-token"), token))
+```
+
+`next` is affine, so the checker makes sure that it runs at most one time.
+To drop it costs nothing.
+
+## Pass a value to the handler
+
+A middleware passes a value to later handlers as a request local. Set it
+with `Air.Request.with_local`, as `auth.go` does. Read it in the handler
+with `Air.Request.local`:
+
+```python
+def whoami(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("you are " ++ Air.Request.local(req, "user")))
+```
+
+A request local is a string. `Air.Request.local` returns `""` when no
+middleware set it. When a plugin sets a request local, give it a prefix,
+such as `status_plugin.user`.
+
+## Apply the middleware
+
+You can apply a middleware in three places.
+
+| Scope | Code |
+| --- | --- |
+| The whole app | `Air.use([auth("secret")], base)` |
+| One route list | `Air.Route.wrap(~auth("secret"), admin())` |
+| One route | `Air.Route.get("/me", auth("secret")(whoami))` |
+
+To protect a group of routes, wrap the route list and mount it:
+
+```python
+def admin() -> List<Air.Route()>:
+  [Air.Route.get("/whoami", whoami)]
+
+def routes() -> List<Air.Route()>:
+  Air.Route.all([
+    public(),
+    Air.Route.mount("/admin", Air.Route.wrap(~auth("secret"), admin()))
+  ])
+```
+
+```bash
+curl localhost:8080/admin/whoami
+curl -H 'x-token: secret' localhost:8080/admin/whoami
+```
+
+```text
+Unauthorized
+you are victor
+```
+
+The `~` marks a template argument. The middleware must be a def, or a def
+applied to constants, such as `auth("secret")`. A local variable does not
+work, because Air copies the middleware for each route.
+
+## Order middleware
+
+`Air.use` takes a list. The first middleware in the list is the outermost:
+it runs first before the handler and last after the handler.
+
+```python
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.use([Air.request_id, Air.log, timing, Air.on_error(Air.Error.plain(Air.Env.prod()))], base)(req)
+```
+
+For a request, the order is `request_id`, `log`, `timing`, `on_error`, the
+handler, and then the same middleware in reverse. Put `Air.on_error`
+inside the middleware that must see the rendered error, such as
+`Air.log`. For a recommended order of the built-in middleware, see
+[Recommended order](/docs/reference/middleware#recommended-order).
+
+## Use a hook instead
+
+When you only need to change the request before the handler, or the
+response after it, use a hook. A hook calls `next` for you, so it cannot
+skip the handler or call it two times. See
+[Lifecycle hooks](/docs/guides/hooks).
+
+## Related
+
+- [Middleware reference](/docs/reference/middleware)
+- [Routing reference](/docs/reference/routing): `Air.use` and `Air.Route.wrap`
+- [Lifecycle hooks](/docs/guides/hooks)
+- [Package routes as a plugin](/docs/guides/plugins)

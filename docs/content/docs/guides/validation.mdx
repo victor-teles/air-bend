@@ -1,10 +1,17 @@
 ---
-title: Validation
-description: Check request bodies, queries and params against a schema.
+title: Validate requests
+description: Check a JSON body, query parameters, or path parameters against a schema before an Air handler runs, and return every problem in one 422 response.
 ---
 
-A schema is a value; `Air.validate_json(schema)` checks the body before
-the handler runs and answers 422 with every problem at once:
+A schema describes the shape of a JSON value. `Air.validate_json(schema)`
+checks the request body before the handler runs. When the body does not
+match, Air responds with 422 and a list of every problem. The handler runs
+only for a body that matches. For every builder and message, see the
+[Schema reference](/docs/reference/schema).
+
+## Validate a JSON body
+
+1. Write the schema in a def:
 
 ```python
 def new_task() -> Air.Schema():
@@ -12,22 +19,109 @@ def new_task() -> Air.Schema():
     Air.Schema.field("title", Air.Schema.str()),
     Air.Schema.field("done", Air.Schema.boolean())
   ])
+```
 
+2. Write the handler. It reads the body again with `Air.Request.json`.
+   The middleware already checked the body, so the `None` case does not
+   happen, but Bend requires the match to handle it:
+
+```python
+def create.go(body: Maybe<&2, Air.Json()>) -> IO(Air.Response()):
+  match body:
+    case Some{task}:
+      IO.pure(Air.Response(), Air.Response.with_status(Air.Response.of_json(task), 201))
+    case None{}:
+      Air.fail(Air.Error.bad_request("body is not JSON"))
+
+def create(req: Air.Request()) -> IO(Air.Response()):
+  create.go(Air.Request.json(req))
+```
+
+3. Apply `Air.validate_json` to the handler in the route:
+
+```python
 Air.Route.post("/tasks", Air.validate_json(new_task())(create))
 ```
 
-```json
+4. Send a body that matches, and a body that does not:
+
+```bash
+curl -H 'content-type: application/json' -d '{"title":"Buy milk","done":false}' localhost:8080/tasks
+curl -H 'content-type: application/json' -d '{"title":1}' localhost:8080/tasks
+```
+
+```text
+{"title":"Buy milk","done":false}
 {"status":422,"error":"Unprocessable Content","errors":["title: expected string","missing: done"]}
 ```
 
-Schemas are `str`, `num`, `int` (non-negative, 32-bit), `boolean`,
-`null`, `any`, `one_of(options)`, `arr(each)`, `obj(props)` (unknown
-keys fail) and `obj_open(props)`, with `field` and `optional` for
-props. A body that is not JSON is a 400 through `on_error`; the 422
-bypasses it so clients see the list in prod too. `Air.validate_query`
-and `Air.validate_params` check the query and path params leniently:
-`"42"` is an integer there. There are no range or pattern rules, and
-responses are not validated.
+## Understand the error responses
 
-To validate and document a route with the same schema, use
-`Air.Api.body` and `Air.Api.query` instead; see [OpenAPI](/docs/guides/openapi).
+| Body | Response |
+| --- | --- |
+| Not JSON, or a content type that is not `application/json` or `+json` | A failed 400 with the detail `body is not JSON`. `Air.on_error` renders it. |
+| JSON that does not match | 422 with the list of problems |
+
+The 422 is not a failed response, so `Air.on_error` does not change it.
+The client gets the list of problems in `prod` mode too.
+
+## Choose schema types
+
+| Builder | Matches |
+| --- | --- |
+| `Air.Schema.str()` | A string |
+| `Air.Schema.num()` | A number |
+| `Air.Schema.int()` | A number with only digits, up to 4294967289 |
+| `Air.Schema.boolean()` | `true` or `false` |
+| `Air.Schema.null()` | `null` |
+| `Air.Schema.any()` | Any value |
+| `Air.Schema.one_of(["a", "b"])` | One of the strings |
+| `Air.Schema.arr(each)` | An array whose items match `each` |
+| `Air.Schema.obj(props)` | An object with only the listed fields |
+| `Air.Schema.obj_open(props)` | An object with the listed fields and any other fields |
+
+In an object, `Air.Schema.field(name, s)` is a required field, and
+`Air.Schema.optional(name, s)` is a field that can be absent.
+
+Schemas have no rules for ranges, lengths, or patterns. Check those in
+the handler, after validation.
+
+## Validate query parameters and path parameters
+
+To check the query, use `Air.validate_query` with an object schema. To
+check path parameters, use `Air.validate_params`. Both read strings as the
+type that the schema wants, so `"42"` matches `Air.Schema.int()`:
+
+```python
+def list_query() -> Air.Schema():
+  Air.Schema.obj_open([Air.Schema.optional("limit", Air.Schema.int())])
+
+Air.Route.get("/tasks", Air.validate_query(list_query())(list))
+```
+
+```bash
+curl 'localhost:8080/tasks?limit=ten'
+```
+
+```text
+{"status":422,"error":"Unprocessable Content","errors":["limit: expected integer"]}
+```
+
+Use `Air.Schema.obj_open` for a query, unless an unknown query parameter
+must fail.
+
+## Validate and document with one schema
+
+To validate a route and describe it in an OpenAPI document with the same
+schema, use `Air.Api.body` and `Air.Api.query` instead. See
+[Publish an OpenAPI document](/docs/guides/openapi).
+
+## What validation does not check
+
+Air does not validate responses.
+
+## Related
+
+- [Schema reference](/docs/reference/schema)
+- [Read request data](/docs/guides/requests)
+- [Publish an OpenAPI document](/docs/guides/openapi)

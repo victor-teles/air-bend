@@ -1,0 +1,182 @@
+---
+title: State reference
+description: The defs for the Air store, sessions, settings in handlers, and readiness checks, with every default and reserved namespace.
+---
+
+This page lists the defs that keep state in Air: the store, sessions,
+settings, and readiness checks. All of them keep data in the store of the
+server, which lives in the process and ends with it.
+
+## The store
+
+The store is one value that every request of a server carries. It holds
+namespaces, and each namespace is a map from string keys to string values.
+A lock protects the store: each operation takes the lock one time.
+
+A request that no server made, such as a request that you build yourself,
+has no store. With such a request, reads return empty values and writes
+do nothing. `Air.Test.inject` gives each request a store.
+
+### Store defs for handlers
+
+Each def takes the request and a namespace name `ns`.
+
+| Def | Returns | Effect |
+| --- | --- | --- |
+| `Air.Store.get(req, ns, key)` | `IO(String)` | The value, or `""` when it is absent. |
+| `Air.Store.set(req, ns, key, value)` | `IO(Unit)` | Sets the value. |
+| `Air.Store.incr(req, ns, key)` | `IO(U32)` | Adds one to the number in `key`, and returns the new number. An absent or non-number value counts as 0. The step is atomic. |
+| `Air.Store.read(req, ns)` | `IO(Map<&2, String>)` | The whole namespace. |
+| `Air.Store.update(req, ns, f)` | `IO(Map<&2, String>)` | Replaces the namespace with `f` of it, atomically, and returns the new namespace. |
+| `Air.Store.drop(req, ns)` | `IO(Unit)` | Removes the namespace. |
+
+<Callout type="warn">
+Keep the function that you pass to `Air.Store.update` short and pure.
+Every other request waits for the lock while it runs.
+</Callout>
+
+```python
+def visits.fin(n: U32) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text(U32.show(n)))
+
+def visits(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(U32, Air.Response(), Air.Store.incr(req, "app", "visits"), visits.fin)
+```
+
+### Air.Store.new
+
+```python
+def Store.new() -> IO(Air.Store())
+```
+
+Returns a new, empty store. Pass it to `Air.serve_shared`, so that a task
+in `main` can use the same store as the handlers.
+
+### Reserved namespaces
+
+Air uses these namespaces. Do not write to them from your app.
+
+| Namespace | Used by |
+| --- | --- |
+| `air` | The server: the draining flag and the drain delay |
+| `ready` | Readiness checks |
+| `config` | The `.env` pairs for `Air.Config.get` |
+| `rate` | `Air.rate` |
+| `sessions` | `Air.session` |
+| `session_tally` | `Air.session` |
+| `metrics` | `Air.metrics` and `Air.Metrics.count` |
+
+## Sessions
+
+A session keeps data for one browser across requests. `Air.session` puts
+a random token in a cookie. The data stays in the store, under the token.
+The cookie carries only the token, because Bend has no HMAC to sign a
+cookie. For the middleware, see the
+[Middleware reference](/docs/reference/middleware#airsession).
+
+### Session configuration
+
+| Def | Sets | Default |
+| --- | --- | --- |
+| `Air.Session.default()` | All defaults | |
+| `Air.Session.with_name(cfg, name)` | The cookie name | `air_session` |
+| `Air.Session.with_ttl(cfg, ms)` | The time since the last request after which a session ends, in milliseconds, up to 49 days | 86400000 (one day) |
+| `Air.Session.with_max(cfg, max)` | The number of new sessions after which one request removes the ended sessions | 10000 |
+| `Air.Session.secure(cfg, on)` | The `Secure` flag of the cookie | `False{}` |
+
+The cookie is `Path=/; HttpOnly; SameSite=Lax`, with no `Max-Age`.
+
+```python
+Air.Session.secure(Air.Session.with_ttl(Air.Session.default(), 3600000), True{})
+```
+
+### Session defs for handlers
+
+| Def | Returns | Effect |
+| --- | --- | --- |
+| `Air.Session.get(req, key)` | `IO(String)` | The field, or `""`. |
+| `Air.Session.set(req, key, value)` | `IO(Unit)` | Sets the field. A key that starts with `_` belongs to Air, and Air ignores the write. |
+| `Air.Session.incr(req, key)` | `IO(U32)` | Adds one to the number in the field, and returns the new number. |
+| `Air.Session.fields(req)` | `IO(Map<&2, String>)` | Every field, including `_seen`, the time of the last request in process milliseconds. |
+| `Air.Session.clear(req)` | `IO(Unit)` | Removes the data. The token and the cookie stay. |
+| `Air.Session.end(req, res)` | `IO(Air.Response())` | Removes the data and returns `res` with a `Set-Cookie` that deletes the cookie. The next request gets a new session. |
+| `Air.Request.session_id(req)` | `String` | The token, or `""` without `Air.session`. |
+
+Without `Air.session` on the route, reads return `""` and writes do
+nothing.
+
+### Session behavior
+
+- A token that names no live session gets a new session. A guessed or old
+  cookie never reaches data.
+- Each request to a session updates `_seen`.
+- Two requests of the same session that write at the same time can lose
+  one of the writes.
+
+## Settings in handlers
+
+The app is a closed template, so a value that `main` reads cannot reach a
+handler. A handler reads settings through the store instead.
+`Air.serve_env` does the setup. See the
+[Settings reference](/docs/reference/settings).
+
+| Def | Returns | Use in |
+| --- | --- | --- |
+| `Air.Config.get(req, name, fallback)` | `IO(String)`: the environment variable, else the `.env` value, else `fallback`. An empty value counts as absent. | A handler |
+| `Air.Config.env(name, fallback)` | `IO(String)`: the environment variable, or `fallback` when it is unset or empty | `main` |
+| `Air.Config.u32(name, fallback)` | `IO(U32)`: the variable as a number, or `fallback`. A value that is not digits stops the process. | `main` |
+| `Air.Config.port(fallback)` | `IO(U32)`: `PORT`, or `fallback`. A bad value stops the process. | `main` |
+| `Air.Config.load(path)` | `IO(Air.Config())`: the pairs of the `.env` file at `path`, or no pairs when there is no file | `main` |
+| `Air.Config.parse(text)` | `Air.Config()`: the pairs of `.env` text | Anywhere |
+| `Air.Config.install(store, cfg)` | `IO(Unit)`: puts the pairs in the store, for `Air.Config.get` | `main` |
+
+To use `Air.Config.get` with `Air.serve_shared`, load and install the file
+yourself, before you pass the store to `Air.serve_shared`:
+
+```python
+cfg : Air.Config() <- Air.Config.load(".env")
+Air.Config.install(store, cfg)
+```
+
+For a complete `main`, see
+[Load the .env file with serve_shared](/docs/guides/configuration#load-the-env-file-with-serve_shared).
+
+## Readiness checks
+
+### Air.health
+
+```python
+def health() -> List<Air.Route()>
+```
+
+Returns two routes. Join them with your routes:
+`Air.Route.all([Air.health(), routes()])`.
+
+| Route | Status and body | When |
+| --- | --- | --- |
+| `GET /healthz` | 200 `{"status":"ok"}` | The process serves requests. |
+| `GET /readyz` | 200 `{"status":"ready"}` | No readiness check is down, and the server is not stopping. |
+| `GET /readyz` | 503 `{"status":"draining"}` | The stop switch flipped. |
+| `GET /readyz` | 503 `{"status":"not ready","down":["cache"]}` | One or more readiness checks are down. Air sorts the names. |
+
+Both routes set `cache-control: no-store`, and both accept `HEAD`.
+
+### Readiness check defs
+
+A readiness check is a name in the store. `/readyz` does not run the
+check. Your code marks the check up or down.
+
+| Def | Effect |
+| --- | --- |
+| `Air.Ready.down(store, name)` | Marks the check `name` down. Use it in `main` or a background task. |
+| `Air.Ready.up(store, name)` | Marks the check `name` up. |
+| `Air.Ready.down_in(req, name)` | Marks the check down, from a handler. |
+| `Air.Ready.up_in(req, name)` | Marks the check up, from a handler. |
+| `Air.Ready.delay(store, ms)` | Sets the drain delay. `AIR_DRAIN_DELAY` sets it under `Air.serve_env`. |
+
+## Related
+
+- [Store shared state](/docs/guides/shared-state)
+- [Add sessions](/docs/guides/sessions)
+- [Configure Air from the environment](/docs/guides/configuration)
+- [Add health checks](/docs/guides/health)

@@ -1,0 +1,179 @@
+---
+title: Send responses
+description: Return text, HTML, and JSON from an Air handler, set the status and headers, set and delete cookies, redirect, and serve one file with caching and ranges.
+---
+
+A handler returns `IO(Air.Response())`. The `Air.Response.*` defs build
+the response, and `IO.pure` wraps it. This guide shows the common
+response tasks. For every def, see the
+[Response reference](/docs/reference/response).
+
+## Return text, HTML, or JSON
+
+To return a response, pick the constructor for the content type:
+
+```python
+def hello(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("hello"))
+```
+
+| Constructor | `content-type` |
+| --- | --- |
+| `Air.Response.text(body)` | `text/plain; charset=utf-8` |
+| `Air.Response.html(body)` | `text/html; charset=utf-8` |
+| `Air.Response.json(body)` | `application/json`. `body` must be JSON text. |
+| `Air.Response.of_json(value)` | `application/json`. Air renders the `Air.Json()` value. |
+
+Use `Air.Response.of_json` when the body contains user data. Air escapes
+the strings in the value, so the output is always valid JSON:
+
+```python
+def user(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.of_json(Air.Json.obj([
+    Air.Json.field("name", Air.Json.of_str(Air.Request.param(req, "name")))
+  ])))
+```
+
+```bash
+curl 'localhost:8080/users/a%22b'
+```
+
+```text
+{"name":"a\"b"}
+```
+
+## Set the status
+
+All constructors in [Return text, HTML, or JSON](#return-text-html-or-json)
+return status 200. To set a different status, call
+`Air.Response.with_status`:
+
+```python
+Air.Response.with_status(Air.Response.json("{\"id\":7}"), 201)
+```
+
+For a response with no body, call `Air.Response.empty(204)`. For an
+error status, return an error instead. See
+[Handle errors](/docs/guides/errors).
+
+## Set headers
+
+To set a header, call `Air.Response.with_header`. To set it only when the
+response does not have it yet, call `Air.Response.with_default_header`:
+
+```python
+Air.Response.with_header(Air.Response.text("ok"), "cache-control", "no-store")
+```
+
+To set the content type, call `Air.Response.with_type`. It adds
+`; charset=utf-8` to text types, JSON, JavaScript, and SVG:
+
+```python
+Air.Response.with_type(Air.Response.new(200, "a,b\n1,2\n"), "text/csv")
+```
+
+```text
+content-type: text/csv; charset=utf-8
+```
+
+## Set a cookie
+
+To set a cookie, make it with `Air.Cookie.new` and add it with
+`Air.Response.with_cookie`. The default cookie is
+`Path=/; HttpOnly; SameSite=Lax`, and it ends when the browser closes:
+
+```python
+def remember.cookie() -> Air.Cookie():
+  Air.Cookie.with_max_age(Air.Cookie.new("theme", "dark"), 2592000)
+
+def remember(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.with_cookie(Air.Response.text("saved"), remember.cookie()))
+```
+
+```text
+set-cookie: theme=dark; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax
+```
+
+Behind HTTPS, add `Air.Cookie.secure(c, True{})`. To add more than one
+cookie, call `Air.Response.with_cookie` again. Each cookie is its own
+`set-cookie` line.
+
+## Delete a cookie
+
+To delete a cookie that has the default path, call
+`Air.Response.expire_cookie`:
+
+```python
+Air.Response.expire_cookie(Air.Response.text("bye"), "theme")
+```
+
+```text
+set-cookie: theme=; Path=/; Max-Age=0
+```
+
+## Redirect
+
+To redirect, call the def for the status that you want. Each one sets the
+`location` header:
+
+| Def | Status | Use it when |
+| --- | --- | --- |
+| `Air.Response.see_other(url)` | 303 | A form `POST` succeeded. The browser follows with `GET`. |
+| `Air.Response.redirect(url)` | 302 | A temporary move, for browsers |
+| `Air.Response.temporary_redirect(url)` | 307 | A temporary move that keeps the method and body |
+| `Air.Response.moved(url)` | 301 | A permanent move, for browsers |
+| `Air.Response.permanent_redirect(url)` | 308 | A permanent move that keeps the method and body |
+
+```python
+def save(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.see_other("/done"))
+```
+
+## Serve one file
+
+To serve one file, call `Air.Response.file` with the request, the path,
+and the content type. It returns an `etag` header, a 304 when the browser
+has the same version, and a 206 for a `Range` request:
+
+```python
+def terms(req: Air.Request()) -> IO(Air.Response()):
+  Air.Response.file(req, "public/terms.html", "text/html")
+```
+
+When Air cannot read the file, the response is a 404.
+
+<Callout type="warn">
+Do not build the path from request data. `Air.Response.file` does not
+stop `..` in a path. To serve a folder, use `Air.static`. See
+[Serve static files](/docs/guides/static-files).
+</Callout>
+
+Air reads files as UTF-8 text. Serve images and other binary files from
+the proxy in front of Air.
+
+## Add caching to any response
+
+To give any response an ETag and byte ranges, wrap it in three defs:
+
+```python
+def report(req: Air.Request()) -> IO(Air.Response()):
+  +req = req
+  IO.pure(Air.Response(), Air.Response.ranged(req,
+    Air.Response.conditional(req,
+      Air.Response.with_etag(Air.Response.text("hello world")))))
+```
+
+| Def | Effect |
+| --- | --- |
+| `Air.Response.with_etag` | Adds the `etag` and `accept-ranges: bytes` headers. |
+| `Air.Response.conditional` | Returns 304 when `If-None-Match` has the same tag. |
+| `Air.Response.ranged` | Returns 206 for one byte range, or 416 for a bad range. |
+
+Only a 200 response to `GET` or `HEAD` changes.
+
+## Related
+
+- [Response reference](/docs/reference/response)
+- [Read request data](/docs/guides/requests)
+- [Render templates](/docs/guides/templates)
+- [Stream responses](/docs/guides/streaming)

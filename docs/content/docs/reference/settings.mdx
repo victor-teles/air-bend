@@ -1,0 +1,107 @@
+---
+title: Settings reference
+description: Every environment variable that Air reads, with its type, default, and effect, and the rules for the .env file.
+---
+
+This page lists every environment variable that Air reads, and the rules
+for the `.env` file. To set these values in a program, see
+[Configure Air from the environment](/docs/guides/configuration).
+
+## Environment variables
+
+`Air.serve_env` and `Air.serve_env_until` read all variables in this table
+except `AIR_ENV`. `Air.Env.from_env()` reads `AIR_ENV` each time you call it.
+
+| Variable | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `PORT` | 1 to 65535 | The port in the serve call | The TCP port to listen on. |
+| `AIR_MAX_HEAD` | bytes | 16384 | The limit on the request line and headers. Over it, the server responds with 431. |
+| `AIR_MAX_HEADERS` | count | 100 | The limit on the number of header lines. Over it, the server responds with 431. |
+| `AIR_MAX_URL` | bytes | 8192 | The limit on the request URL. Over it, the server responds with 414. |
+| `AIR_MAX_BODY` | bytes | 1048576 | The limit on the request body. Over it, the server responds with 413. |
+| `AIR_TIMEOUT_IDLE` | ms | 15000 | The wait for the next request on an open connection. |
+| `AIR_TIMEOUT_HEAD` | ms | 10000 | The time to receive the request line and headers. |
+| `AIR_TIMEOUT_BODY` | ms | 30000 | The time to receive the body. |
+| `AIR_TIMEOUT_APP` | ms | 30000 | The time for the app to return a response. Over it, the server responds with 503. |
+| `AIR_TIMEOUT_SEND` | ms | 30000 | The time to write the response, or each streamed piece. |
+| `AIR_TIMEOUT_DRAIN` | ms | 10000 | The time a stopping server waits for requests in flight. |
+| `AIR_DRAIN_DELAY` | ms | 0 | The time a stopping server continues to serve, with `/readyz` at 503, before it stops accepting connections. |
+| `AIR_ENV` | `dev` or `prod` | `prod` | The mode. In `dev` mode, the error renderers show the detail and the path. Any value other than `dev` is `prod`. |
+
+A timeout of 0 means no limit.
+
+## Rules for numbers
+
+- An unset or empty variable takes its default.
+- A variable that is set but is not digits stops the process before it
+  listens. The message names the variable:
+
+```text
+air: config: AIR_MAX_BODY is not a number: "1e3"
+air: config is invalid
+```
+
+- A `PORT` over 65535 stops the process with `PORT is out of range`.
+- `Air.Config.u32` and `Air.Config.port` apply the same rules to the
+  variables that you read.
+
+## Precedence
+
+For each setting, Air uses the first value that it finds:
+
+1. The process environment.
+2. The `.env` file.
+3. The default in code.
+
+Air reads the `.env` file into a map. It does not change the process
+environment, because Bend can read an environment variable but cannot
+set one. The server variables in
+[Environment variables](#environment-variables) come only from the
+process environment. The `.env` file is for the settings that handlers
+read with `Air.Config.get`.
+
+## The .env file
+
+`Air.serve_env` loads the file `.env` from the working directory.
+`Air.Config.load(path)` loads any other file.
+
+```bash title=".env"
+# comments and blank lines are skipped
+DATABASE_URL=postgres://localhost/app
+export GREETING="Hello there"
+TAGLINE='single quotes work too'
+```
+
+| Rule | Example | Result |
+| --- | --- | --- |
+| Each line is `KEY=VALUE`. | `A=1` | `A` is `1`. |
+| The first `=` splits the line. | `URL=a=b` | `URL` is `a=b`. |
+| Air trims the key and the value. | `A = 1 ` | `A` is `1`. |
+| Air removes a leading `export `. | `export A=1` | `A` is `1`. |
+| Air removes one pair of `"` or `'` around the value. | `A="x y"` | `A` is `x y`. |
+| Air does not process escapes or `${VAR}`. | `A=${HOME}` | `A` is `${HOME}`. |
+| A later line replaces an earlier line. | `A=1` then `A=2` | `A` is `2`. |
+| Air skips blank lines and lines that start with `#`. | `# note` | No value. |
+
+A missing file is not an error. Air skips a line that it cannot read, for
+example a line with no `=` or an empty key, and prints its line number:
+
+```text
+air: .env:3: ignored
+```
+
+## Secret values
+
+Air never prints the value of a variable whose name contains `SECRET`,
+`TOKEN`, `KEY`, or `PASSWORD`, in any letter case. An error message
+shows `<hidden>` instead:
+
+```text
+air: config: API_KEY_TTL is not a number: <hidden>
+```
+
+## Related
+
+- [Configure Air from the environment](/docs/guides/configuration)
+- [Server reference](/docs/reference/server)
+- [State reference](/docs/reference/state): `Air.Config` defs

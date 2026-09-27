@@ -1,0 +1,259 @@
+---
+title: Response reference
+description: Every def that builds or reads a response in Air, with the status and content type that each one sets.
+---
+
+This page lists the defs that build and read an `Air.Response()`, and the
+defs for cookies, files, and streams. For examples by task, see
+[Send responses](/docs/guides/responses).
+
+A handler returns `IO(Air.Response())`. To return a pure response, wrap it
+in `IO.pure`:
+
+```python
+def home(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("hello"))
+```
+
+## Constructors
+
+| Def | Status | `content-type` |
+| --- | --- | --- |
+| `Air.Response.text(body)` | 200 | `text/plain; charset=utf-8` |
+| `Air.Response.html(body)` | 200 | `text/html; charset=utf-8` |
+| `Air.Response.json(body)` | 200 | `application/json` |
+| `Air.Response.of_json(value)` | 200 | `application/json` |
+| `Air.Response.send(body)` | 200 | Inferred from the body. See [Air.Response.send](#airresponsesend). |
+| `Air.Response.view(template, ctx)` | 200 | `text/html; charset=utf-8` |
+| `Air.Response.new(status, body)` | `status` | None |
+| `Air.Response.empty(status)` | `status` | None. The body is empty. |
+
+`Air.Response.json` takes a string that is already JSON.
+`Air.Response.of_json` takes an `Air.Json()` value and renders it.
+`Air.Response.view` renders a template. See the
+[JSON reference](/docs/reference/json).
+
+```python
+Air.Response.of_json(Air.Json.obj([Air.Json.field("q", Air.Json.of_str("a\"b"))]))
+# body: {"q":"a\"b"}
+```
+
+### Air.Response.send
+
+```python
+def Response.send(body: String) -> Air.Response()
+```
+
+Returns a 200 whose content type depends on the first character of the
+body that is not a space, tab, or line break.
+
+| First character | `content-type` |
+| --- | --- |
+| `<` | `text/html; charset=utf-8` |
+| `{` or `[` | `application/json; charset=utf-8` |
+| Any other character, or an empty body | `text/plain; charset=utf-8` |
+
+To set a different type, call `Air.Response.with_type` after it.
+
+## Status and headers
+
+| Def | Returns |
+| --- | --- |
+| `Air.Response.with_status(r, status)` | `r` with a new status. |
+| `Air.Response.with_header(r, name, value)` | `r` with the header set. The new value replaces a header with the same name. |
+| `Air.Response.with_default_header(r, name, value)` | `r` with the header set only when `r` does not have it. |
+| `Air.Response.with_type(r, mime)` | `r` with `content-type` set to `mime`. |
+
+Header names are not case-sensitive. `with_type` adds `; charset=utf-8`
+to `text/*`, `application/json`, `application/javascript`, and
+`image/svg+xml`, unless `mime` already has a parameter.
+
+| `with_type` argument | `content-type` |
+| --- | --- |
+| `application/javascript` | `application/javascript; charset=utf-8` |
+| `text/csv; charset=latin1` | `text/csv; charset=latin1` |
+| `image/png` | `image/png` |
+
+## Reading a response
+
+Middleware and tests use these defs.
+
+| Def | Returns |
+| --- | --- |
+| `Air.Response.status(r)` | The status. |
+| `Air.Response.body(r)` | The body. Returns `""` for a stream. In tests, use `Air.Test.body`. |
+| `Air.Response.header(r, name)` | The header value, or `""`. |
+| `Air.Response.cookies(r)` | The `Set-Cookie` lines, in order. |
+| `Air.Response.route(r)` | The pattern of the route that ran, such as `/users/:id`, or `""`. The server removes this value before it writes the response. |
+| `Air.Response.error(r)` | `Some(error)` for a failed response that is not rendered yet, else `None`. |
+
+## Redirects
+
+Each redirect sets the `location` header and has an empty body.
+
+| Def | Status |
+| --- | --- |
+| `Air.Response.redirect(url)` | 302 |
+| `Air.Response.moved(url)` | 301 |
+| `Air.Response.see_other(url)` | 303 |
+| `Air.Response.temporary_redirect(url)` | 307 |
+| `Air.Response.permanent_redirect(url)` | 308 |
+| `Air.Response.redirect_with(status, url)` | `status` |
+
+After a form `POST`, use `Air.Response.see_other`, so that the browser
+follows the redirect with a `GET`.
+
+## Failed responses
+
+A failed response carries an `Air.Error()` and has no body yet.
+`Air.on_error` renders it. Without `Air.on_error`, the server renders it
+as the reason phrase in plain text. See the
+[Errors reference](/docs/reference/errors).
+
+| Def | Status | Notes |
+| --- | --- | --- |
+| `Air.fail(e)` | The status of `e` | `IO.pure` of `Air.Response.fail(e)`, for a handler to return. |
+| `Air.Response.fail(e)` | The status of `e` | A failed response. |
+| `Air.Response.not_found()` | 404 | A failed response. `Air.dispatch` returns it when no route matches. |
+| `Air.Response.method_not_allowed(allow)` | 405 | A failed response with the `allow` header. |
+| `Air.Response.bad_request()` | 400 | A failed response. |
+| `Air.Response.options(allow)` | 204 | Not failed. It has the `allow` header. |
+
+## Cookies
+
+`Air.Cookie.new(name, value)` makes a cookie with these defaults:
+`Path=/`, `HttpOnly`, `SameSite=Lax`, no `Max-Age` (a session cookie),
+and no `Secure`. Air writes the name and the value as you give them, so
+encode them yourself when they can contain `;`, `,`, or spaces.
+
+| Def | Effect |
+| --- | --- |
+| `Air.Cookie.with_path(c, path)` | Sets `Path`. |
+| `Air.Cookie.with_domain(c, domain)` | Sets `Domain`. |
+| `Air.Cookie.with_max_age(c, seconds)` | Sets `Max-Age`. A value of 0 makes a session cookie. |
+| `Air.Cookie.secure(c, on)` | Adds or removes `Secure`. |
+| `Air.Cookie.http_only(c, on)` | Adds or removes `HttpOnly`. |
+| `Air.Cookie.same_site(c, mode)` | Sets `SameSite` to `Lax`, `Strict`, or `None`, or removes it with `""`. `None` always adds `Secure`, because browsers require it. |
+| `Air.Cookie.render(c)` | Returns the `Set-Cookie` value. |
+| `Air.Response.with_cookie(r, c)` | Adds one `Set-Cookie` line to `r`. |
+| `Air.Response.expire_cookie(r, name)` | Adds `name=; Path=/; Max-Age=0`, which tells the browser to delete a cookie with the default path. |
+
+```python
+Air.Response.with_cookie(res,
+  Air.Cookie.same_site(
+    Air.Cookie.secure(
+      Air.Cookie.with_max_age(
+        Air.Cookie.with_domain(
+          Air.Cookie.with_path(Air.Cookie.new("b", "2"), "/app"), "example.com"), 3600), True{}), "Strict"))
+```
+
+```text
+set-cookie: b=2; Path=/app; Domain=example.com; Max-Age=3600; Secure; HttpOnly; SameSite=Strict
+```
+
+## Files
+
+Air reads files as UTF-8 text. Use these defs for HTML, CSS, JavaScript,
+JSON, SVG, and other text files. Air does not preserve the bytes of a
+binary file, such as a PNG. Air reads at most 64 MiB of a file.
+
+### Air.Response.file
+
+```python
+def Response.file(req: Air.Request(), path: String, mime: String) -> IO(Air.Response())
+```
+
+Returns the file at `path` with the content type `mime`. The response has
+an `etag` header and `accept-ranges: bytes`. It is a 304 when
+`If-None-Match` has the same tag, and a 206 or 416 for a `Range` header.
+When Air cannot read the file, it returns a failed 404.
+
+<Callout type="warn">
+`Air.Response.file` does not check `path`. Do not build `path` from
+request data. To serve a directory, use `Air.static`.
+</Callout>
+
+### Air.static
+
+```python
+def static(+dir: String, req: Air.Request()) -> IO(Air.Response())
+```
+
+A handler that serves the files in `dir`. Use it on a route whose
+wildcard is named `path`:
+
+```python
+Air.Route.get("/assets/*path", Air.static("public"))
+```
+
+`Air.static` does everything that `Air.Response.file` does, and it sets
+the content type from the file extension. It returns a failed 404 for a
+missing file, a dotfile, or a segment that contains `/` or `\`. A path
+that ends in `/` serves `index.html`. See
+[Serve static files](/docs/guides/static-files) for the extension table.
+
+### Air.Disk.read
+
+```python
+def Disk.read(path: String) -> IO(Maybe<&2, String>)
+```
+
+Returns the whole file as `Some(text)`, or `None` when Air cannot open or
+read it.
+
+### Air.Response.with_etag, conditional, and ranged
+
+```python
+def Response.with_etag(r: Air.Response()) -> Air.Response()
+def Response.conditional(req: Air.Request(), r: Air.Response()) -> Air.Response()
+def Response.ranged(req: Air.Request(), r: Air.Response()) -> Air.Response()
+```
+
+Apply the file behavior to any response. Only a 200 to `GET` or `HEAD`
+changes.
+
+| Def | Effect |
+| --- | --- |
+| `with_etag` | Adds a strong `etag` from a hash of the body and its length, and `accept-ranges: bytes`. |
+| `conditional` | Returns a 304 when `If-None-Match` has the tag or `*`. |
+| `ranged` | Returns a 206 with `content-range` for one satisfiable range. Returns a 416 with `content-range: bytes */11` for a malformed, multiple, or unsatisfiable range. |
+
+```python
+Air.Response.ranged(req, Air.Response.conditional(req, Air.Response.with_etag(Air.Response.text("hello world"))))
+```
+
+| `Range` | Status | `content-range` | Body |
+| --- | --- | --- | --- |
+| `bytes=0-4` | 206 | `bytes 0-4/11` | `hello` |
+| `bytes=-5` | 206 | `bytes 6-10/11` | `world` |
+| `bytes=50-` | 416 | `bytes */11` | empty |
+
+## Streams
+
+A streamed response sends a body in pieces while a producer makes them.
+See [Stream responses](/docs/guides/streaming).
+
+| Def | Returns |
+| --- | --- |
+| `Air.Stream.new()` | `IO(Chan(String))`: a channel with a window of 8 pieces. |
+| `Air.Stream.with_room(n)` | `IO(Chan(String))`: a channel with a window of `n` pieces, at least 1. |
+| `Air.Response.stream(chan)` | A 200 whose body is the pieces that the producer sends on `chan`, until it closes `chan`. It sets no content type. |
+| `Air.Response.sse(chan)` | Like `stream`, with `content-type: text/event-stream` and `cache-control: no-cache`. |
+| `Air.Sse.event(name, data)` | The text of one named event. |
+| `Air.Sse.data(data)` | The text of one unnamed event. |
+
+`Air.Sse.event` writes `event: name`, then one `data:` line for each line
+of `data`, then a blank line. `Air.Sse.event("tick", "a\nb")` returns:
+
+```text
+event: tick
+data: a
+data: b
+
+```
+
+## Related
+
+- [Send responses](/docs/guides/responses)
+- [Request reference](/docs/reference/request)
+- [Errors reference](/docs/reference/errors)

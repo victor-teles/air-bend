@@ -1,0 +1,248 @@
+---
+title: Routing reference
+description: The defs that make routes and route lists, dispatch a request to a route, and apply middleware.
+---
+
+This page lists the defs for routes, route lists, dispatch, and
+middleware. For a task-based introduction, see
+[Define routes](/docs/guides/routing).
+
+## Types
+
+| Type | Definition | Description |
+| --- | --- | --- |
+| `Air.Handler()` | `Air.Request() -> IO(Air.Response())` | A handler. |
+| `Air.Middleware()` | `Air.Handler() -> Air.Handler()` | A middleware. |
+| `Air.Route()` | a route | A method, a pattern, a handler, and OpenAPI notes. |
+| `Air.Slash()` | `ignore`, `strict`, or `redirect` | A trailing-slash policy for `Air.dispatch_with`. |
+
+Handlers are affine: each one runs at most one time. For this reason, a
+route list is a def that Air calls again for each request, for example
+`def routes() -> List<Air.Route()>`.
+
+## Patterns
+
+A pattern is the path part of a route, such as `/users/:id`.
+
+| Segment | Matches | Binds |
+| --- | --- | --- |
+| `users` | The same segment, exactly | Nothing |
+| `:id` | Any one segment | The path parameter `id` |
+| `*path` | The rest of the path, including `/`. It can be empty. | The wildcard `path` |
+
+A wildcard must be the last segment. Air compares a pattern with the
+normal form of the request path. In the normal form, percent escapes are
+decoded, `.` and `..` are resolved, and repeated slashes are one slash.
+So a path parameter never contains an encoded `%2F`.
+
+For `/files/*path`, the request `/files/css/app.css` binds `path` to
+`css/app.css`. The requests `/files/` and `/files` both bind `path` to
+`""`.
+
+## Route constructors
+
+Each constructor takes a pattern and a handler and returns one route.
+
+| Def | Method |
+| --- | --- |
+| `Air.Route.get(path, handler)` | `GET` |
+| `Air.Route.post(path, handler)` | `POST` |
+| `Air.Route.put(path, handler)` | `PUT` |
+| `Air.Route.delete(path, handler)` | `DELETE` |
+| `Air.Route.patch(path, handler)` | `PATCH` |
+| `Air.Route.head(path, handler)` | `HEAD` |
+| `Air.Route.options(path, handler)` | `OPTIONS` |
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `path` | `String` | The pattern, such as `/users/:id`. |
+| `handler` | `Air.Handler()` | The handler that runs when the route matches. |
+
+A `HEAD` route is optional. Without one, a `HEAD` request runs the `GET`
+route and the server drops the body. An `OPTIONS` route is optional.
+Without one, an `OPTIONS` request gets 204 with an `Allow` header.
+
+```python
+Air.Route.get("/users/:id", show_user)
+```
+
+## Route lists
+
+### Air.Route.all
+
+```python
+def Route.all(groups: List<List<Air.Route()>>) -> List<Air.Route()>
+```
+
+Joins route lists into one route list, in order.
+
+```python
+Air.Route.all([pages(), Air.Route.mount("/api", api())])
+```
+
+### Air.Route.mount
+
+```python
+def Route.mount(prefix: String, routes: List<Air.Route()>) -> List<Air.Route()>
+```
+
+Adds `prefix` to the start of each pattern in `routes`. The prefix can
+contain path parameters. Do not put a wildcard in a prefix: no route under
+it can match.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `prefix` | `String` | The prefix, such as `/api`. |
+| `routes` | `List<Air.Route()>` | The route list to mount. |
+
+```python
+Air.Route.mount("/api", api())   # "/users/:id" becomes "/api/users/:id"
+```
+
+### Air.Route.wrap
+
+```python
+def Route.wrap(~mw: Air.Middleware(), routes: List<Air.Route()>) -> List<Air.Route()>
+```
+
+Wraps the handler of each route in `routes` with the middleware `mw`. Routes
+outside the list do not run `mw`.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `mw` | `Air.Middleware()` | The middleware, as a template argument. It must be a def or a def applied to constants, such as `~auth("secret")`. A local variable does not work. |
+| `routes` | `List<Air.Route()>` | The route list to wrap. |
+
+To wrap one route, apply the middleware to its handler instead:
+`Air.Route.get("/x", auth("secret")(handler))`.
+
+```python
+Air.Route.mount("/admin", Air.Route.wrap(~auth("secret"), admin()))
+```
+
+### Air.Route.check
+
+```python
+def Route.check(routes: List<Air.Route()>) -> IO(Unit)
+```
+
+Finds problems in a route list. For each problem, it prints one line, and
+then it ends the process with code 1. When there is no problem, it returns
+and prints nothing. Call it in `main` before the serve def.
+
+| Problem | Printed line |
+| --- | --- |
+| Two routes with the same method and the same pattern shape | `air: duplicate route: GET /users/:` |
+| A wildcard that is not the last segment | `air: wildcard not last: GET /a/*/b` |
+
+After the problem lines, it prints `air: routes conflict`.
+
+The shape of a pattern ignores the names of path parameters and
+wildcards, so `/users/:id` and `/users/:name` are duplicates. Air runs the
+first route that matches, so without `Air.Route.check`, the second
+duplicate never runs.
+
+```python
+def main() -> IO(Unit):
+  do IO<Unit>:
+    Air.Route.check(routes())
+    Air.serve(~app, 8080)
+```
+
+## Dispatch
+
+### Air.dispatch
+
+```python
+def dispatch(routes: List<Air.Route()>, +req: Air.Request()) -> IO(Air.Response())
+```
+
+Runs the first route in `routes` whose method and pattern match `req`,
+under the `Air.Slash.ignore()` policy. `Air.dispatch(routes())` is a
+handler.
+
+| Request | Response |
+| --- | --- |
+| A route matches the method and the path. | The response of that route's handler. |
+| `HEAD`, and only a `GET` route matches. | The `GET` route runs. The server sends no body. |
+| The path matches only routes with other methods. | A failed 405 response with an `Allow` header. |
+| `OPTIONS`, and no `OPTIONS` route matches. | 204 with an `Allow` header. |
+| `OPTIONS *` | 204 with an `Allow` header that lists every method of the app. |
+| No route matches the path. | A failed 404 response. |
+
+The `Allow` value lists the methods of the matching routes. It adds
+`HEAD` when there is a `GET` route, and it always adds `OPTIONS`. Air
+sorts the methods, for example `GET, HEAD, OPTIONS, POST`.
+
+The 404 and 405 responses are failed responses, so `Air.on_error` renders
+them. The route that runs sets the pattern on the response, so a
+middleware outside dispatch can read it with `Air.Response.route`.
+
+```python
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch(routes(), req)
+```
+
+### Air.dispatch_with
+
+```python
+def dispatch_with(+policy: Air.Slash(), routes: List<Air.Route()>, +req: Air.Request()) -> IO(Air.Response())
+```
+
+Works like `Air.dispatch` under a trailing-slash policy.
+
+| Policy | `/a/` and `/a` |
+| --- | --- |
+| `Air.Slash.ignore()` | The same path. This is the default. |
+| `Air.Slash.strict()` | Different paths. A route matches only when the request and the pattern agree on the trailing slash. |
+| `Air.Slash.redirect()` | A request for `/a/` gets 308 to `/a`. Air keeps the query, and it never redirects `/`. |
+
+```python
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch_with(Air.Slash.redirect(), routes(), req)
+```
+
+## Middleware
+
+A middleware is a def with the next handler as its first handler
+parameter. Settings come before `next`:
+
+```python
+def auth(+token: String, next: Air.Handler(), req: Air.Request()) -> IO(Air.Response()):
+  ...
+```
+
+Then `auth("secret")` is a middleware, and `auth("secret")(handler)` is a
+handler. To respond without the rest of the chain, do not call `next`.
+For the built-in middleware, see the
+[Middleware reference](/docs/reference/middleware).
+
+### Air.use
+
+```python
+def use(mws: List<Air.Middleware()>, handler: Air.Handler()) -> Air.Handler()
+```
+
+Wraps `handler` in each middleware in `mws`. The first middleware in the
+list is the outermost. With `Air.use([a, b], h)`, `a` runs first before
+the handler, and `a` runs last after the handler.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `mws` | `List<Air.Middleware()>` | The middleware, outermost first. |
+| `handler` | `Air.Handler()` | The handler to wrap, usually a def that calls `Air.dispatch`. |
+
+```python
+def base(req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch(routes(), req)
+
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.use([Air.request_id, Air.log], base)(req)
+```
+
+## Related
+
+- [Define routes](/docs/guides/routing)
+- [Write middleware](/docs/guides/middleware)
+- [Middleware reference](/docs/reference/middleware)
+- [Package routes as a plugin](/docs/guides/plugins)

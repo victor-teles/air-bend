@@ -1,20 +1,27 @@
 ---
-title: Lifecycle hooks
-description: onRequest, preHandler, onSend, onResponse and onError, as middleware with a name.
+title: Add lifecycle hooks
+description: Run code at a point in the request lifecycle with Air hooks, the Air form of Fastify's onRequest, preHandler, onSend, onResponse, and onError.
 ---
 
-Air has no hook registry. A hook is a [middleware](/docs/guides/middleware)
-that takes a plain function instead of `next`, so it cannot forget to
-call the rest of the chain or call it twice. Where you put it in
-`Air.use` or `Air.Route.wrap` decides when it runs.
+A hook runs a function at one point in the life of a request. In Air, a
+hook is a middleware that takes a plain function instead of `next`. The
+hook calls the rest of the chain for you, so your function cannot skip the
+handler or call it two times. Where you put the hook decides when it runs.
 
-| Air | Fastify | `f` takes | Runs |
-| --- | --- | --- | --- |
-| `Air.on_request(f)` in `use` | onRequest | the request, answers a request | before routing |
-| `Air.on_request(f)` in `Route.wrap` | preHandler | the same, with params bound | after routing, before the handler |
-| `Air.on_send(f)` | onSend | the request and the response, answers a response | after the handler; its answer is sent |
-| `Air.on_response(f)` | onResponse | the request, the response and the milliseconds | after the handler; the response is unchanged |
-| `Air.on_fail(f)` | onError | the request and the error | when the response is a failure; it goes on unchanged |
+## Choose a hook
+
+| Air | Fastify name | Your function receives | Your function returns | Runs |
+| --- | --- | --- | --- | --- |
+| `Air.on_request(f)` in `Air.use` | onRequest | The request | A request | Before routing |
+| `Air.on_request(f)` in `Air.Route.wrap` | preHandler | The request, with path parameters | A request | After routing, before the handler |
+| `Air.on_send(f)` | onSend | The request and the response | A response. Air sends it. | After the handler |
+| `Air.on_response(f)` | onResponse | The request, the response, and the milliseconds | `Unit` | After the handler. The response does not change. |
+| `Air.on_fail(f)` | onError | The request and the error | `Unit` | After the handler, only for a failed response. The response does not change. |
+
+## Add hooks to the app
+
+This app adds a header to each response, prints the time of each request,
+and reports each error:
 
 ```python
 def stamp(req: Air.Request(), res: Air.Response()) -> IO(Air.Response()):
@@ -36,37 +43,54 @@ def app(req: Air.Request()) -> IO(Air.Response()):
   ], base)(req)
 ```
 
-The first in the list runs first on the way in and last on the way out,
-so the order above matters in two places:
+The first middleware in the list runs first before the handler and last
+after it. So the order in this example matters in two places:
 
-- `on_fail` sits inside `on_error`, so it sees the failure before
-  `on_error` renders it into a page.
-- `on_send` sits outside `on_error`, so it sees the rendered response.
-  A header it adds to a failure also survives `on_error`, whichever
-  side it is on, because a rendered error keeps the failure's headers.
+- `Air.on_fail` is inside `Air.on_error`, so it sees the error before
+  `Air.on_error` renders it.
+- `Air.on_send` is outside `Air.on_error`, so it sees the rendered
+  response. A rendered error keeps the headers of the failed response, so
+  a header that `on_send` adds stays on either side.
 
-A preHandler goes on a group:
+## Add a preHandler hook to a route list
+
+To run a hook after routing, when the path parameters are ready, wrap a
+route list with `Air.on_request`:
 
 ```python
 def load_user(req: Air.Request()) -> IO(Air.Request()):
   +req = req
   IO.pure(Air.Request(), Air.Request.with_local(req, "user", Air.Request.param(req, "id")))
 
-Air.Route.wrap(~Air.on_request(load_user), user_routes())
+def user_routes() -> List<Air.Route()>:
+  Air.Route.wrap(~Air.on_request(load_user), [Air.Route.get("/users/:id", show_user)])
 ```
 
-## What there is not
+The handler reads the value with `Air.Request.local(req, "user")`.
 
-- **After the write.** The server owns the socket, so app code runs
-  before the response is written. `on_response` runs when the app has
-  its response, and a write that fails is never seen.
-- **Answering early.** `on_request` cannot answer on its own. A hook
-  that must, such as an auth check, is an ordinary middleware that
-  does not call `next`.
-- **A registry.** Functions cannot be copied in Bend, so a list of
-  callbacks consulted per request would not work. The onion needs none,
-  and the checker sees that each `next` runs at most once.
+## Stop a request early
 
-A hook that writes the store takes its lock once per request. Put hooks
-on the groups that need them, as `examples/hello` does with its `/hooks`
-routes, rather than on the whole app.
+`Air.on_request` cannot respond by itself. For a check that must stop the
+request, such as authentication, write a middleware that does not call
+`next`. See [Write middleware](/docs/guides/middleware).
+
+## Keep hooks cheap
+
+A hook that writes to the store takes the store lock one time for each
+request. Put such hooks on the route lists that need them, not on the
+whole app. The `/hooks` routes in `examples/hello/app.bend` show this.
+
+## What Air does not have
+
+- **A hook after the write.** The server owns the socket, and app code
+  runs before the server writes the response. `Air.on_response` runs when
+  the app has its response. The app never sees a write that fails.
+- **A hook registry.** Bend cannot copy a function, so a list of
+  callbacks that Air consults for each request does not work. The order of
+  middleware does the same job.
+
+## Related
+
+- [Middleware reference](/docs/reference/middleware#hooks)
+- [Write middleware](/docs/guides/middleware)
+- [Handle errors](/docs/guides/errors)

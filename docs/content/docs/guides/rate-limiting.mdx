@@ -1,18 +1,86 @@
 ---
-title: Rate limiting
-description: At most n requests per key per window.
+title: Limit request rates
+description: Limit how many requests each client, API key, or other key can make in a time window, with the Air.rate middleware.
 ---
 
-`Air.rate(n, window_ms, key)` is a middleware: at most `n` requests per
-key per window. Over the limit the request fails with 429, `retry-after`
-and the reason; every response carries `x-ratelimit-limit`,
-`x-ratelimit-remaining` and `x-ratelimit-reset`. The window is fixed and
-the counts start over each window, so memory is bounded by the keys seen
-in one. `Air.Rate.by_ip(trust)` keys on the address a trusted proxy
-reports; without one there is no client address (`TCP.accept` gives
-none), so every request shares one bucket. `Air.Rate.by_header("x-api-key")`
-keys on a header; a def of the app's can key on anything.
+`Air.rate(n, window_ms, key)` lets `n` requests for each key in each
+window of `window_ms` milliseconds. The next request in the window gets a
+429 response. The key decides who shares a limit: a client address, an
+API key, or any value that you compute.
+
+## Limit one route
+
+To limit one route, apply `Air.rate` to its handler. This route allows 60
+requests a minute for each client address:
 
 ```python
 Air.Route.get("/search", Air.rate(60, 60000, Air.Rate.by_ip(Air.Trust.proxy()))(search))
 ```
+
+To limit a route list, wrap it:
+
+```python
+Air.Route.wrap(~Air.rate(60, 60000, Air.Rate.by_header("x-api-key")), api())
+```
+
+## Choose a key
+
+| Key | Buckets |
+| --- | --- |
+| `Air.Rate.by_ip(Air.Trust.proxy())` | One for each client address that a trusted proxy reports |
+| `Air.Rate.by_header("x-api-key")` | One for each value of the header. Requests without it share one bucket. |
+| Your own def of type `Air.Request() -> String` | One for each value that it returns |
+
+<Callout type="warn">
+Use `Air.Rate.by_ip` only behind a trusted proxy. Bend gives no client
+address for a TCP connection, so without a proxy every request shares one
+bucket.
+</Callout>
+
+## Read the rate limit headers
+
+Every response under `Air.rate` gets three headers:
+
+```text
+x-ratelimit-limit: 60
+x-ratelimit-remaining: 59
+x-ratelimit-reset: 42
+```
+
+`x-ratelimit-reset` is the number of seconds until the next window. Over
+the limit, the response is a failed 429 with `retry-after` and the detail
+`rate limit: 61 of 60 per 60000 ms`. `Air.on_error` renders it, and the
+headers stay.
+
+## Use more than one rate limit
+
+All `Air.rate` middleware in an app share one count for each key, in the
+`rate` namespace of the store. Two limits with the same key count the
+same requests, and two different windows reset each other.
+
+To use two limits, give each one a key def that adds its own prefix, and
+use the same window for both:
+
+```python
+def login_key(req: Air.Request()) -> String:
+  "login:" ++ Air.Rate.by_ip(Air.Trust.proxy(), req)
+
+def search_key(req: Air.Request()) -> String:
+  "search:" ++ Air.Rate.by_ip(Air.Trust.proxy(), req)
+
+Air.Route.post("/login", Air.rate(5, 60000, login_key)(login))
+Air.Route.get("/search", Air.rate(60, 60000, search_key)(search))
+```
+
+## Know how the window works
+
+The window is fixed, not sliding. The counts start again at the start of
+each window, so the store holds only the keys of one window. A client can
+send `n` requests at the end of one window and `n` more at the start of
+the next.
+
+## Related
+
+- [Middleware reference](/docs/reference/middleware#airrate)
+- [Run Air in production](/docs/guides/deploy#trust-the-proxy-headers)
+- [Store shared state](/docs/guides/shared-state)

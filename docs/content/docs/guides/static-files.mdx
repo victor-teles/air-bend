@@ -1,19 +1,85 @@
 ---
-title: Static files
-description: Serve files from a directory under a wildcard route.
+title: Serve static files
+description: Serve a folder of HTML, CSS, JavaScript, and other text files from an Air app, with ETags, byte ranges, and protection against paths that leave the folder.
 ---
 
-`Air.static(dir)` is a handler for a wildcard route whose param is
-`path`:
+`Air.static(dir)` is a handler that serves the files in a folder. It sets
+the content type from the file extension, and it supports ETags, 304
+responses, and byte ranges.
+
+## Serve a folder
+
+To serve a folder, add a route with a wildcard named `path`, and use
+`Air.static` as its handler:
 
 ```python
 Air.Route.get("/assets/*path", Air.static("public"))
 ```
 
-It serves the file under `dir` with a mime from the extension, an ETag,
-304 and byte ranges. A request cannot leave `dir`: a segment holding a
-slash of either kind (from `%2F` or `%5C`), a `.` or `..`, or a dotfile
-is a 404, the same as a missing file. A path ending in `/` serves its
-`index.html`. There is no directory listing, and a symlink inside `dir`
-is followed wherever it points. Files are read as UTF-8 text, so this is
-for HTML, CSS, JavaScript and SVG, not images.
+```bash
+curl -i localhost:8080/assets/css/app.css
+```
+
+This request serves the file `public/css/app.css`. The folder path is
+relative to the working directory of the process.
+
+## Serve an index page
+
+A request path that ends in `/` serves `index.html` from that folder. To
+serve a single-page site at the root, put the static route last, so that
+your other routes match first:
+
+```python
+def routes() -> List<Air.Route()>:
+  Air.Route.all([
+    api(),
+    [Air.Route.get("/*path", Air.static("public"))]
+  ])
+```
+
+Then `/` serves `public/index.html`. There is no folder listing.
+
+## Know which requests get a 404
+
+`Air.static` responds with a failed 404 to each of these requests, the
+same as for a missing file, so a client cannot learn which paths exist:
+
+- A segment that contains `/` or `\`, for example from `%2F` or `%5C`.
+- A segment that is `.` or `..`.
+- A dotfile, such as `.env`.
+
+`Air.on_error` renders the 404 like your other errors.
+
+<Callout type="warn">
+Do not put symbolic links in the folder unless you want Air to serve their
+targets. `Air.static` follows a symbolic link wherever it points.
+</Callout>
+
+## Content types
+
+| Extension | `content-type` |
+| --- | --- |
+| `html`, `htm` | `text/html; charset=utf-8` |
+| `css` | `text/css; charset=utf-8` |
+| `js`, `mjs` | `text/javascript; charset=utf-8` |
+| `json`, `map` | `application/json; charset=utf-8` |
+| `svg` | `image/svg+xml; charset=utf-8` |
+| `txt` | `text/plain; charset=utf-8` |
+| `md` | `text/markdown; charset=utf-8` |
+| `csv` | `text/csv; charset=utf-8` |
+| `xml` | `application/xml` |
+| `webmanifest` | `application/manifest+json` |
+| Any other | `application/octet-stream` |
+
+## Serve text files only
+
+Air reads files as UTF-8 text, and it reads at most 64 MiB of a file. Use
+`Air.static` for HTML, CSS, JavaScript, JSON, and SVG. Air does not keep
+the bytes of images and other binary files. Serve them from the proxy in
+front of Air.
+
+## Related
+
+- [Response reference](/docs/reference/response#files)
+- [Send responses](/docs/guides/responses#serve-one-file)
+- [Define routes](/docs/guides/routing)

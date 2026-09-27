@@ -1,28 +1,86 @@
 ---
-title: Templates
-description: Render Mustache-style templates against a JSON context.
+title: Render templates
+description: Render Mustache-style HTML templates against a JSON context in an Air handler, from a string or from a file.
 ---
 
 `Air.Response.view(template, ctx)` renders a Mustache-style template
-against a JSON context and answers it as HTML:
+against a JSON value and returns the result as HTML. Air escapes values by
+default, so user data cannot add HTML to the page.
+
+## Render a template
+
+To render a template, build the context with the `Air.Json` builders and
+call `Air.Response.view`:
 
 ```python
+def page.ctx(+name: String) -> Air.Json():
+  Air.Json.obj([
+    Air.Json.field("name", Air.Json.of_str(name)),
+    Air.Json.field("items", Air.Json.arr([Air.Json.of_str("milk"), Air.Json.of_str("bread")]))
+  ])
+
 def page(req: Air.Request()) -> IO(Air.Response()):
   IO.pure(Air.Response(), Air.Response.view(
     "<h1>Hello, {{name}}</h1><ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>{{^items}}<p>Nothing yet.</p>{{/items}}",
-    Air.Json.obj([Air.Json.field("name", Air.Json.of_str(Air.Request.param(req, "name"))), ...])))
+    page.ctx(Air.Request.param(req, "name"))))
 ```
 
-| Tag | Renders |
-|---|---|
-| `{{name}}` | the value, HTML-escaped |
-| `{{{name}}}` | the value, raw |
-| `{{#name}}…{{/name}}` | once per array item, once for another truthy value, else nothing |
-| `{{^name}}…{{/name}}` | once when the value is falsy or an empty array |
-| `{{.}}` | the current item |
-| `{{! note }}` | nothing |
+```bash
+curl 'localhost:8080/page/%3Cb%3EAda'
+```
 
-Names may be dotted, and a block over a list still sees the outer
-fields. A missing name prints as "". Malformed templates still render.
-There are no partials and no cache: read a template with
-`Air.Disk.read` per request, or hold it in a def.
+```html
+<h1>Hello, &lt;b&gt;Ada</h1><ul><li>milk</li><li>bread</li></ul>
+```
+
+## Use the tags
+
+| Tag | Renders |
+| --- | --- |
+| `{{name}}` | The value, HTML-escaped |
+| `{{{name}}}` | The value, not escaped |
+| `{{#name}}...{{/name}}` | The block one time for each item of an array, one time for another truthy value, else nothing |
+| `{{^name}}...{{/name}}` | The block one time when the value is falsy or an empty array |
+| `{{.}}` | The current item |
+| `{{! note }}` | Nothing |
+
+Names can be dotted, such as `{{user.name}}`. A block over a list can
+read the outer fields. A missing name renders as nothing. A malformed
+template still renders. For the full rules, see
+[Templates](/docs/reference/json#templates).
+
+<Callout type="warn">
+Use `{{{name}}}` only for HTML that you trust. It does not escape the
+value.
+</Callout>
+
+## Load a template from a file
+
+To keep a template in a file, read it with `Air.Disk.read` in the
+handler. `Air.Disk.read` returns `None` when the file is missing, so
+handle that case:
+
+```python
+def tasks.render(found: Maybe<&2, String>) -> IO(Air.Response()):
+  match found:
+    case Some{template}:
+      IO.pure(Air.Response(), Air.Response.view(template, Air.Json.obj([Air.Json.field("title", Air.Json.of_str("Tasks"))])))
+    case None{}:
+      Air.fail(Air.Error.internal("template views/tasks.html is missing"))
+
+def tasks(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(Maybe<&2, String>, Air.Response(), Air.Disk.read("views/tasks.html"), tasks.render)
+```
+
+Air reads the file on each request and has no template cache. For a
+template that never changes, keep it in a def instead of a file.
+
+## What templates do not have
+
+Templates have no partials and no cache.
+
+## Related
+
+- [JSON and templates reference](/docs/reference/json)
+- [Send responses](/docs/guides/responses)
+- [Serve static files](/docs/guides/static-files)

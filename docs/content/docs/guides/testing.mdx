@@ -1,19 +1,31 @@
 ---
-title: Testing
-description: Run an app on a request without opening a socket.
+title: Test an app
+description: Test an Air app without a socket. Run it on raw HTTP requests, check the responses, keep state across requests, and run the tests natively.
 ---
 
-Laws in `LAWS.bend` check pure pieces, but they cannot run `IO`, so a
-handler that touches the store or a middleware chain needs another way
-in. `Air.Test.inject` runs an app on a request written as raw HTTP text
-and gives back the response the server would have written. No port is
-opened.
+The laws in `LAWS.bend` check pure defs, but they cannot run `IO`. To test
+a handler that uses the store or a middleware chain, use `Air.Test`.
+`Air.Test.inject` runs an app on a request that you write as raw HTTP
+text, and returns the response that the server would write. No port
+opens. For every def, see the [Test reference](/docs/reference/test).
 
-A test is a program. Keep the app in its own file (the examples keep it
-in `app.bend`, beside a `main.bend` that serves it) so the test can
-import it without a second `main`:
+## Put the app in its own file
 
-```python
+A test imports the app, and a program can have only one `main`. So keep
+the app in `app.bend` and the server in `main.bend`, as the examples do:
+
+```text
+examples/hello/app.bend    the routes, handlers, and middleware
+examples/hello/main.bend   main: serves the app
+tests/hello.bend           main: tests the app
+```
+
+## Write a test
+
+A test is a Bend program. Each assertion prints one line and returns a
+`Bool`. `Air.Test.finish` prints the count and sets the exit code:
+
+```python title="tests/hello.bend"
 import Base
 import ../air.bend as Air
 import ../examples/hello/app.bend as Hello
@@ -28,33 +40,79 @@ def main() -> IO(Unit):
     Air.Test.finish([a])
 ```
 
+## Run the tests
+
+Run each test from the repository root:
+
+```bash
+bend tests/hello.bend
 ```
-$ bend tests/hello.bend
+
+```text
 ok - greets
 1 passed, 0 failed
 ```
 
-`finish` ends the process with code 1 when a check failed, and prints
-`not ok - name: want "…" got "…"` for each failure.
+When an assertion fails, the test prints what it wanted and what it got,
+and it exits with code 1:
 
-## Requests
+```text
+not ok - greets: want "Olá, ada!" got "Olá, bob!"
+0 passed, 1 failed
+tests failed
+```
+
+## Run the tests natively
+
+With `bend tests/hello.bend`, Bend checks the program each time, and an
+app can take about 25 seconds to start. CI builds each test as a native
+binary instead:
+
+1. Make the output folder:
+
+```bash
+mkdir -p bench/out
+```
+
+2. Build each test:
+
+```bash
+for t in tests/*.bend; do bend "$t" -o "bench/out/test-$(basename "$t" .bend)"; done
+```
+
+3. Run the binaries:
+
+```bash
+bench/out/test-hello
+bench/out/test-dashboard
+```
+
+The native build needs clang.
+
+## Build requests
 
 `Air.Test.get(target)` and `Air.Test.post(target, content_type, body)`
-write the request text, `Content-Length` included. `Air.Test.with_header(name, value, raw)`
-adds a header line. Any raw text works too, and it is read as the
-server reads it:
+write the request text, with `Content-Length`.
+`Air.Test.with_header(name, value, raw)` adds a header line:
 
-- the head goes through the same parser under the default limits, so a
-  bad request line is a 400, a head over 16 KiB a 431 and a bad version
-  a 505, each with the body the server would send;
-- the body is cut at its `Content-Length`. A body over the limit is a
-  413. A body shorter than its length is a 400 here, where the server
-  would wait for the rest.
+```python
+Air.Test.with_header("x-token", "secret", Air.Test.get("/admin/whoami"))
+```
 
-## State across requests
+You can also write any raw text. Air reads it as the server does:
 
-`inject` gives each request a fresh store. To check a counter, a
-session or a rate limit, make one store and pass it to `inject_shared`:
+- Air parses the head under the default limits. A bad request line gets
+  400, a head over 16 KiB gets 431, and a bad version gets 505, each with
+  the body that the server would send.
+- Air cuts the body at its `Content-Length`. A body over the limit gets
+  413. A body shorter than its `Content-Length` gets 400. The server
+  would wait for the rest instead.
+
+## Keep state across requests
+
+`Air.Test.inject` gives each request a new store. To test a counter, a
+session, or a rate limit, make one store and pass it to
+`Air.Test.inject_shared` for each request:
 
 ```python
 def visits(store: Air.Store()) -> IO(Bool):
@@ -65,16 +123,38 @@ def visits(store: Air.Store()) -> IO(Bool):
     Air.Test.expect("counts", Air.Response.body(a) ++ "," ++ Air.Response.body(b), "1,2")
 ```
 
-## Streams
+Call it with a new store: `IO.bind(Air.Store(), Bool, Air.Store.new(), visits)`.
 
-`Air.Response.body` is empty for a streamed response.
-`Air.Test.body(res)` reads the stream until the producer closes it and
-answers the pieces joined. A producer that sleeps between pieces makes
-the test wait just as long.
+## Test a stream
 
-## What is not simulated
+`Air.Response.body` returns `""` for a streamed response. To read the
+stream, call `Air.Test.body`. It reads until the producer closes the
+channel, and returns the pieces joined:
 
-Timeouts (there is no connection to watch), keep-alive,
-`Expect: 100-continue` and chunked request bodies, which reach the app
-as written. Effects run for real: request ids and session tokens are
-random, so check their shape, not their value.
+```python
+def ticks.check(body: String) -> IO(Bool):
+  +body = body
+  Air.Test.expect_true("five ticks", String.contains(body, "data: 1"), body)
+
+def ticks() -> IO(Bool):
+  IO.bind(Air.Response(), Bool, Air.Test.inject(Hello.app, Air.Test.get("/ticks")),
+    res => IO.bind(String, Bool, Air.Test.body(res), ticks.check))
+```
+
+A producer that sleeps between pieces makes the test wait as long.
+
+## Know what a test does not simulate
+
+- Timeouts, because there is no connection to watch.
+- Keep-alive.
+- `Expect: 100-continue`.
+- Chunked request bodies. The app gets the body as written.
+
+Effects run for real. Request ids and session tokens are random, so check
+their format, not their value.
+
+## Related
+
+- [Test reference](/docs/reference/test)
+- [Checks and CI](/docs/project/checks)
+- [Build your first Air app](/docs/tutorial/first-app): a first test, step by step

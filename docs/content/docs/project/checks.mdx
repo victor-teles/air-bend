@@ -1,29 +1,70 @@
 ---
-title: Checks
-description: The proof gate to run before a commit.
+title: Checks and CI
+description: Run the proof gate and the tests before a commit, and know what each CI job checks and how Bend is pinned in CI.
 ---
 
-`bend PROOF.bend` proves the laws in `LAWS.bend`. It must print
-"All terms check." before a commit.
+This page is for contributors to Air. It lists the checks to run before a
+commit and the jobs that CI runs.
 
-`bend tests/hello.bend` and `bend tests/dashboard.bend` run the example
-apps in-process (see [Testing](/docs/guides/testing)). Run them from
-the repo root. Each prints one line per check and exits 1 if any failed.
+## Run the checks before a commit
 
-## CI
+Run these commands from the repository root:
 
-`.github/workflows/ci.yml` runs on every pull request and every push to
+1. Prove the laws:
+
+```bash
+bend PROOF.bend
+```
+
+   The output must contain `All terms check.`
+
+2. Run the tests:
+
+```bash
+bend tests/hello.bend
+bend tests/dashboard.bend
+```
+
+   Each test prints one line for each assertion and exits with code 1
+   when an assertion fails. Each one takes about 25 seconds to start. To
+   run them faster, build them natively. See
+   [Run the tests natively](/docs/guides/testing#run-the-tests-natively).
+
+3. When you changed the docs, build them:
+
+```bash
+cd docs
+pnpm build
+```
+
+## CI jobs
+
+`.github/workflows/ci.yml` runs on every pull request and on every push to
 `main`:
 
-- **Proof**: `bend PROOF.bend` must print "All terms check."
-- **Tests**: `tests/*.bend` built natively and run. Built rather than run
-  with `bend file.bend`, where the apps take about 25 s to start.
-- **Native builds**: both examples with `-o`. The C backend refuses two
-  defs whose names mangle to the same symbol, and only a native build
-  shows it.
-- **Docs**: `pnpm build` in `docs/`.
-- **Benchmark** (pull requests only): see [Benchmarks](/docs/project/benchmarks).
+| Job | Checks |
+| --- | --- |
+| Proof | `bend PROOF.bend` prints `All terms check.` |
+| Tests | Each `tests/*.bend` is built natively and runs. A native build starts at once. |
+| Native builds | `examples/hello` and `examples/dashboard` build with `bend -o`. The C backend refuses two defs whose names become the same C symbol, and only a native build finds this error. |
+| Docs build | `pnpm build` in `docs/` succeeds. |
+| Benchmark | Pull requests only. See [Benchmarks](/docs/project/benchmarks). |
 
-Bend is pinned in `.github/actions/setup-bend/action.yml` (version and
-sha256 of the linux-x64 archive), with clang 19 for native builds. To
-move CI to a new Bend, change both inputs there.
+## Change the Bend version in CI
+
+`.github/actions/setup-bend/action.yml` pins Bend. It installs one
+release, checks its sha256, and installs clang 19 for native builds. To
+move CI to a new Bend release:
+
+1. Change the `version` input to the new release.
+2. Change the `sha256` input to the sha256 of
+   `bend-<version>-linux-x64.tar.gz` for that release.
+3. Run the checks in
+   [Run the checks before a commit](#run-the-checks-before-a-commit) with
+   the new release.
+
+## Related
+
+- [Test an app](/docs/guides/testing)
+- [Benchmarks](/docs/project/benchmarks)
+- [How Bend shapes Air](/docs/concepts/bend#laws-and-proofs)

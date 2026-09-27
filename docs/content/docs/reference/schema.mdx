@@ -1,0 +1,175 @@
+---
+title: Schema and OpenAPI reference
+description: The Air schema builders and their error messages, the validation middleware, and the defs that make an OpenAPI 3.1 document.
+---
+
+This page lists the defs that describe JSON values with a schema, check
+requests against a schema, and describe routes in an OpenAPI document.
+For examples by task, see [Validate requests](/docs/guides/validation)
+and [Publish an OpenAPI document](/docs/guides/openapi).
+
+## Schema builders
+
+A schema is a value of type `Air.Schema()`. Build it in a def, so that you
+can use it in more than one place.
+
+| Def | Matches | Error message on a mismatch | OpenAPI schema |
+| --- | --- | --- | --- |
+| `Air.Schema.any()` | Any value | None | `{}` |
+| `Air.Schema.str()` | A string | `expected string` | `{"type":"string"}` |
+| `Air.Schema.num()` | A number | `expected number` | `{"type":"number"}` |
+| `Air.Schema.int()` | A number with only digits, up to 4294967289 | `expected integer` | `{"type":"integer","minimum":0,"maximum":4294967295}` |
+| `Air.Schema.boolean()` | `true` or `false` | `expected boolean` | `{"type":"boolean"}` |
+| `Air.Schema.null()` | `null` | `expected null` | `{"type":"null"}` |
+| `Air.Schema.one_of(options)` | A string in `options` | `expected one of a, b` | `{"type":"string","enum":[...]}` |
+| `Air.Schema.arr(each)` | An array whose items match `each` | `expected array` | `{"type":"array","items":...}` |
+| `Air.Schema.obj(props)` | An object with the listed fields and no other fields | `expected object` | `additionalProperties: false` |
+| `Air.Schema.obj_open(props)` | An object with the listed fields, and any other fields | `expected object` | No `additionalProperties` |
+
+The fields of an object schema:
+
+| Def | Meaning |
+| --- | --- |
+| `Air.Schema.field(name, s)` | A required field that must match `s`. |
+| `Air.Schema.optional(name, s)` | A field that can be absent. When it is present, it must match `s`. |
+
+Schemas have no rules for minimum, maximum, length, or pattern. Check
+those in the handler, after validation.
+
+```python
+def new_task() -> Air.Schema():
+  Air.Schema.obj([
+    Air.Schema.field("title", Air.Schema.str()),
+    Air.Schema.field("done", Air.Schema.boolean()),
+    Air.Schema.optional("tags", Air.Schema.arr(Air.Schema.str()))
+  ])
+```
+
+## Error messages
+
+### Air.Schema.errors
+
+```python
+def Schema.errors(s: Air.Schema(), value: Air.Json()) -> List<&2, String>
+```
+
+Returns every problem with `value`, or `[]` when `value` matches `s`.
+Each problem starts with the path to the value:
+
+| Problem | Message |
+| --- | --- |
+| A value of the wrong type | `title: expected string` |
+| An array item of the wrong type | `tags[1]: expected integer` |
+| A required field that is absent | `missing: user.name` |
+| A field that `Air.Schema.obj` does not list | `unknown: user.nick` |
+| A wrong type at the top level | `expected object` |
+| A problem inside an array of objects | `[0].a: expected string` |
+
+Air lists the problems in the order of the schema. Unknown fields come
+after the other problems of their object.
+
+## Validation middleware
+
+| Middleware | Checks | Strict or lenient |
+| --- | --- | --- |
+| `Air.validate_json(schema)` | The JSON body | Strict |
+| `Air.validate_query(schema)` | The query parameters, as an object | Lenient |
+| `Air.validate_params(schema)` | The path parameters, as an object | Lenient |
+
+Query parameters and path parameters are always strings, so the lenient
+check reads a string as the type that the schema wants:
+
+| Schema | Matching strings |
+| --- | --- |
+| `Air.Schema.int()` | `"42"` |
+| `Air.Schema.num()` | Any JSON number, such as `"1.5"` |
+| `Air.Schema.boolean()` | `"true"` and `"false"` |
+| `Air.Schema.null()` | `""` |
+
+Use `Air.Schema.obj_open` for a query, unless an unknown query parameter
+must fail.
+
+When the value does not match, the middleware responds with 422:
+
+```json
+{"status":422,"error":"Unprocessable Content","errors":["title: expected string","missing: done"]}
+```
+
+The 422 is not a failed response, so `Air.on_error` does not change it.
+When `Air.validate_json` gets a body that is not JSON, it returns a failed
+400 with the detail `body is not JSON`. The handler reads the body again
+with `Air.Request.json`. For the signatures, see the
+[Middleware reference](/docs/reference/middleware#validation).
+
+## OpenAPI notes
+
+An OpenAPI note is a def that takes a route and returns the same route
+with a note. Nest the calls to add more than one note.
+
+| Def | Validates | Adds to the document |
+| --- | --- | --- |
+| `Air.Api.body(schema, route)` | The JSON body, with `Air.validate_json(schema)` | A required JSON request body, a 400 response, and a 422 response with the shape of the problem list |
+| `Air.Api.query(schema, route)` | The query, with `Air.validate_query(schema)` | One query parameter for each field of the object schema. A `field` is a required parameter, and an `optional` field is not. |
+| `Air.Api.returns(status, schema, route)` | Nothing | A JSON response with `status` |
+| `Air.Api.summary(text, route)` | Nothing | The summary of the operation |
+| `Air.Api.tag(name, route)` | Nothing | A tag of the operation |
+
+```python
+Air.Api.tag("tasks",
+  Air.Api.summary("Create a task",
+    Air.Api.returns(201, task(),
+      Air.Api.body(new_task(), Air.Route.post("/tasks", create)))))
+```
+
+When you add two summaries to one route, Air uses the inner one. Air lists
+the tags from the inner one to the outer one.
+
+## Make the document
+
+### Air.openapi
+
+```python
+def openapi(title: String, version: String, routes: List<Air.Route()>, req: Air.Request()) -> IO(Air.Response())
+```
+
+A handler that responds with the OpenAPI document for `routes`, as JSON.
+The route that serves the document must not be in `routes`:
+
+```python
+def routes() -> List<Air.Route()>:
+  Air.Route.all([
+    api(),
+    [Air.Route.get("/openapi.json", Air.openapi("Tasks", "1.0.0", api()))]
+  ])
+```
+
+### Air.Api.document
+
+```python
+def Api.document(title: String, version: String, routes: List<Air.Route()>) -> Air.Json()
+```
+
+Returns the document as an `Air.Json()` value, for a file or a test.
+
+## What the document contains
+
+| Part | Content |
+| --- | --- |
+| `openapi` | `3.1.0` |
+| `info` | The `title` and `version` that you pass |
+| `servers` | `[{"url":"/"}]`, so paths are relative to the server that serves the document |
+| `paths` | One entry for each pattern, in route order, with each method of that pattern. `:id` and `*rest` become `{id}` and `{rest}`. |
+| Path parameters | One required string parameter for each `:name` and `*name`. A `*name` gets the description `rest of the path, may contain /`. |
+| `operationId` | The method in lowercase, `_`, and the path. In the path, Air keeps letters and digits and makes each run of other characters one `_`. Examples: `get_api_tasks_id` for `GET /api/tasks/:id`, and `get_` for `GET /`. |
+| `responses` | The responses that you declare. A route with no response gets `default`. |
+
+The document does not list the HEAD and OPTIONS responses that the router
+makes. It lists the routes that you register with `Air.Route.head` and
+`Air.Route.options`. It has no security schemes, examples, `$ref`,
+header or cookie parameters, or YAML output.
+
+## Related
+
+- [Validate requests](/docs/guides/validation)
+- [Publish an OpenAPI document](/docs/guides/openapi)
+- [JSON and templates reference](/docs/reference/json)

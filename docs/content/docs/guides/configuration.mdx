@@ -1,89 +1,81 @@
 ---
-title: Configuration
-description: Port, limits, timeouts and app settings from the environment and a .env file.
+title: Configure Air from the environment
+description: Read the port, limits, and timeouts from environment variables with serve_env, keep app settings in a .env file, and read settings in a handler.
 ---
 
-`Air.serve_env` takes everything the server needs from the environment:
+This guide shows how to set an Air server up from environment variables
+and how to read your own settings. For every variable and default, see
+the [Settings reference](/docs/reference/settings).
+
+## Serve the app with settings from the environment
+
+To read the server settings from the environment, serve the app with
+`Air.serve_env` instead of `Air.serve`:
 
 ```python
 def main() -> IO(Unit):
   Air.serve_env(~app, 8080)
 ```
 
-```
+`Air.serve_env` serves on `PORT`, or on the port in the code when `PORT`
+is unset. It also reads the `AIR_MAX_*` limits, the `AIR_TIMEOUT_*`
+timeouts, and `AIR_DRAIN_DELAY`. To change them, set the variables when
+you start the app:
+
+```bash
 PORT=9090 AIR_MAX_BODY=10485760 bend main.bend
 ```
 
-It serves on `PORT`, or on the port in code when `PORT` is unset. It
-reads the limits and timeouts below, and loads a `.env` file from the
-working directory. `Air.serve_env_until(~app, switch, 8080)` does the
-same for an app that takes the stop switch, like `serve_until`.
+For an app that takes the stop switch, use
+`Air.serve_env_until(~app, switch, 8080)`. See
+[Run Air in production](/docs/guides/deploy).
 
-## Precedence
+## Fix a bad value
 
-For every setting, the first of these wins:
+When a server variable has a value that is not a number, the process
+stops before it listens. The message names the variable:
 
-1. the process environment;
-2. the `.env` file;
-3. the default in code.
-
-Bend can read one environment variable at a time but cannot list or set
-them. So a `.env` file never changes the environment: it is loaded into
-a map, and every lookup asks the environment first.
-
-## Server settings
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `PORT` | the port passed to `serve_env` | 1 to 65535 |
-| `AIR_MAX_HEAD` | 16384 | bytes of request line and headers; over it, 431 |
-| `AIR_MAX_HEADERS` | 100 | header lines; over it, 431 |
-| `AIR_MAX_URL` | 8192 | bytes of URL; over it, 414 |
-| `AIR_MAX_BODY` | 1048576 | bytes of body; over it, 413 |
-| `AIR_TIMEOUT_IDLE` | 15000 | ms to wait for a request on an open connection |
-| `AIR_TIMEOUT_HEAD` | 10000 | ms for the request line and headers |
-| `AIR_TIMEOUT_BODY` | 30000 | ms for the body |
-| `AIR_TIMEOUT_APP` | 30000 | ms for the handler; over it, 503 |
-| `AIR_TIMEOUT_SEND` | 30000 | ms to write the response, or each streamed piece |
-| `AIR_TIMEOUT_DRAIN` | 10000 | ms a stopping server waits for requests in flight |
-| `AIR_DRAIN_DELAY` | 0 | ms a stopping server keeps serving, `/readyz` answering 503, before it stops accepting (see [Health](/docs/guides/health)) |
-| `AIR_ENV` | prod | `dev` shows error details (see [Errors](/docs/guides/errors)) |
-
-A timeout of 0 means no limit. An unset or empty variable takes its
-default. A variable that is set but is not a number stops the process
-before it listens, with the variable's name:
-
-```
+```text
 air: config: AIR_MAX_BODY is not a number: "1e3"
 air: config is invalid
 ```
 
-`Air.Limits.from_env()` and `Air.Timeouts.from_env()` give the same
-values to a `main` that calls `serve_until` or `serve_shared` itself.
+Set the variable to digits only, such as `AIR_MAX_BODY=1000`. An unset or
+empty variable takes its default.
 
-## The `.env` file
+## Keep app settings in a .env file
 
-```
+To keep the settings of your app in a file, create `.env` in the folder
+where you start the app:
+
+```bash title=".env"
 # comments and blank lines are skipped
 DATABASE_URL=postgres://localhost/app
 export GREETING="Hello there"
 TAGLINE='single quotes work too'
 ```
 
-Each line is `KEY=VALUE`. A leading `export ` is dropped, the key and
-value are trimmed, and one pair of surrounding quotes comes off the
-value. The first `=` splits, so a value may contain `=`. There are no
-escapes and no `${VAR}` expansion. A later line wins over an earlier
-one. A line Air cannot read is named and skipped:
+`Air.serve_env` loads this file at startup. The process environment wins
+over the file, so `GREETING=Hi bend main.bend` replaces the value in the
+file. The server variables, such as `PORT`, come only from the process
+environment, not from the file.
 
-```
+<Callout type="warn">
+Do not commit `.env` to version control. The `.gitignore` of the Air
+repository already excludes it.
+</Callout>
+
+When Air cannot read a line, it prints the line number and skips the line:
+
+```text
 air: .env:3: ignored
 ```
 
-A missing file is no error. Keep `.env` out of version control; the
-repository's `.gitignore` already does.
+## Read a setting in a handler
 
-## Reading settings in a handler
+To read a setting in a handler, call `Air.Config.get` with a name and a
+fallback. It returns the environment variable, else the `.env` value, else
+the fallback:
 
 ```python
 def greeting.fin(g: String) -> IO(Air.Response()):
@@ -93,27 +85,67 @@ def greeting(req: Air.Request()) -> IO(Air.Response()):
   IO.bind(String, Air.Response(), Air.Config.get(req, "GREETING", "hi"), greeting.fin)
 ```
 
-`Air.Config.get(req, name, fallback)` answers the environment's value,
-else the `.env` file's, else `fallback`. The app is a closed template,
-so a value loaded in `main` cannot be passed into it. `serve_env`
-installs the file's pairs in the store (namespace `config`), which
-every request carries. Each lookup reads one variable and takes the
-store's lock once. Read settings you need on every request once, not
-in a loop.
-
-With `serve_shared`, do the same by hand:
-
-```python
-cfg : Air.Config() <- Air.Config.load(".env")
-Air.Config.install(store, cfg)
+```bash
+curl localhost:8080/config/greeting
 ```
 
-In `main`, `Air.Config.env(name, fallback)` reads a string and
-`Air.Config.u32(name, fallback)` a number, failing fast like the server
-settings.
+```text
+Hello there
+```
 
-## Secrets
+The app is a closed template, so a value that `main` reads cannot reach a
+handler. `Air.serve_env` puts the `.env` values in the store, and each
+request carries the store. Each call reads one variable and takes the
+store lock one time, so do not call it in a loop.
 
-A value is never printed when its name contains `SECRET`, `TOKEN`,
-`KEY` or `PASSWORD`, in any case. An error names the variable and shows
-`<hidden>` instead of the value.
+## Read a setting in main
+
+To read a setting before the server starts, call `Air.Config.env` for a
+string or `Air.Config.u32` for a number:
+
+```python
+def main() -> IO(Unit):
+  do IO<Unit>:
+    workers : U32 <- Air.Config.u32("WORKERS", 4)
+    IO.print("workers: " ++ U32.show(workers))
+    Air.serve_env(~app, 8080)
+```
+
+`Air.Config.u32` stops the process when the value is not a number, like
+the server variables.
+
+## Load the .env file with serve_shared
+
+`Air.serve_shared` does not read the environment. To use `Air.Config.get`
+with it, load the file and put it in the store yourself:
+
+```python
+def serve(store: Air.Store()) -> IO(Unit):
+  +store = store
+  do IO<Unit>:
+    cfg : Air.Config() <- Air.Config.load(".env")
+    Air.Config.install(store, cfg)
+    limits : Air.Limits() <- Air.Limits.from_env()
+    timeouts : Air.Timeouts() <- Air.Timeouts.from_env()
+    port : U32 <- Air.Config.port(8080)
+    switch : Air.Switch() <- Air.Switch.new()
+    Air.serve_shared(~app, limits, timeouts, store, switch, port)
+
+def main() -> IO(Unit):
+  IO.bind(Air.Store(), Unit, Air.Store.new(), serve)
+```
+
+`serve` rebinds the store with `+`, because it uses the store two times.
+`Air.serve_shared` takes an app that receives the stop switch.
+
+## Keep secrets out of logs
+
+Air never prints the value of a variable whose name contains `SECRET`,
+`TOKEN`, `KEY`, or `PASSWORD`, in any letter case. An error message shows
+`<hidden>` instead. Put one of these words in the name of each secret.
+
+## Related
+
+- [Settings reference](/docs/reference/settings)
+- [State reference](/docs/reference/state#settings-in-handlers)
+- [Run Air in production](/docs/guides/deploy)

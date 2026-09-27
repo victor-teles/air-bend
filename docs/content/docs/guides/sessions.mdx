@@ -1,29 +1,111 @@
 ---
-title: Sessions
-description: Server-side sessions named by a cookie token.
+title: Add sessions
+description: Add server-side sessions to Air routes, read and write session fields, log a user out, and configure the session cookie.
 ---
 
-`Air.session(cfg)` gives the routes it wraps a session: a random token
-in an `HttpOnly`, `SameSite=Lax` cookie names an entry in the store, and
-handlers read and write fields by name. Wrap the group that needs it,
-`Air.Route.wrap(~Air.session(Air.Session.default()), pages())`, rather
-than the whole app: a client that never sends cookies would mint a
-session per request.
+`Air.session` gives each request a session. A random token in an
+`HttpOnly`, `SameSite=Lax` cookie names an entry in the store, and
+handlers read and write fields by name. The cookie carries only the
+token: Bend has no HMAC to sign a cookie, so the data stays on the server.
+
+## Add sessions to a route list
+
+To add sessions, wrap the route list that needs them with `Air.session`:
 
 ```python
-def count(req: Air.Request()) -> IO(Air.Response()):
-  IO.bind(U32, Air.Response(), Air.Session.incr(req, "n"), n => ...)
+def with_session() -> List<Air.Route()>:
+  [
+    Air.Route.get("/count", count),
+    Air.Route.get("/logout", logout)
+  ]
+
+def routes() -> List<Air.Route()>:
+  Air.Route.all([
+    public(),
+    Air.Route.wrap(~Air.session(Air.Session.default()), with_session())
+  ])
 ```
 
-`Air.Session.get`, `set`, `incr`, `fields`, `clear` (drops the data,
-keeps the token) and `end` (drops the data and expires the cookie on a
-response). Sessions are server-side only: Bend has no HMAC, so a cookie
-cannot carry data safely, and the cookie carries the token alone. They
-live in the process and end with it. A session untouched for the TTL (a
-day by default) is gone, and once the store holds more than `max` of
-them (ten thousand) a request sweeps the expired ones. A token that
-names no live session is replaced, so a guessed or stale cookie never
-attaches to data. Turn on `Air.Session.secure(cfg, True{})` behind the
-TLS proxy. Keys starting with `_` are the framework's. Each session is
-one JSON string in the store's `sessions` namespace, so the rest of the
-store does not slow down as sessions pile up.
+Do not wrap the whole app. A client that sends no cookies, such as a
+health probe, gets a new session on each request.
+
+## Read and write session fields
+
+To add one to a field, call `Air.Session.incr`. To read or write a field,
+call `Air.Session.get` or `Air.Session.set`:
+
+```python
+def count.fin(n: U32) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("visit " ++ U32.show(n)))
+
+def count(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(U32, Air.Response(), Air.Session.incr(req, "n"), count.fin)
+```
+
+```bash
+curl -c jar -b jar localhost:8080/count
+curl -c jar -b jar localhost:8080/count
+```
+
+```text
+visit 1
+visit 2
+```
+
+The first response sets the cookie:
+
+```text
+set-cookie: air_session=<token>; Path=/; HttpOnly; SameSite=Lax
+```
+
+Field names that start with `_` belong to Air. Air ignores a write to
+them.
+
+## Log a user out
+
+To end a session, call `Air.Session.end` with the request and the
+response. It removes the data and deletes the cookie. The next request
+gets a new session:
+
+```python
+def logout(req: Air.Request()) -> IO(Air.Response()):
+  Air.Session.end(req, Air.Response.text("bye"))
+```
+
+To remove the data but keep the token, call `Air.Session.clear`.
+
+## Configure the session
+
+Start from `Air.Session.default()` and change what you need:
+
+```python
+def session_cfg() -> Air.Session():
+  Air.Session.secure(Air.Session.with_ttl(Air.Session.with_name(Air.Session.default(), "sid"), 3600000), True{})
+
+Air.Route.wrap(~Air.session(session_cfg()), with_session())
+```
+
+| Def | Sets | Default |
+| --- | --- | --- |
+| `Air.Session.with_name(cfg, name)` | The cookie name | `air_session` |
+| `Air.Session.with_ttl(cfg, ms)` | The time after the last request when the session ends, up to 49 days | One day |
+| `Air.Session.with_max(cfg, max)` | The number of new sessions after which one request removes the ended sessions | 10000 |
+| `Air.Session.secure(cfg, on)` | The `Secure` flag | Off |
+
+Turn on `Secure` when clients reach Air through HTTPS.
+
+## Know how sessions behave
+
+- Sessions live in the process and end when it stops.
+- A token that names no live session gets a new session, so a guessed or
+  old cookie never reaches data.
+- Each session is one JSON string in the `sessions` namespace of the
+  store. The rest of the store does not slow down as sessions grow.
+- Two requests of the same session that write at the same time can lose
+  one of the writes.
+
+## Related
+
+- [State reference](/docs/reference/state#sessions)
+- [Store shared state](/docs/guides/shared-state)
+- [Run Air in production](/docs/guides/deploy)

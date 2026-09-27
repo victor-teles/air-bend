@@ -1,12 +1,18 @@
 ---
-title: OpenAPI
-description: Validate a request and document it with one schema, and serve an OpenAPI 3.1 document.
+title: Publish an OpenAPI document
+description: Describe Air routes with notes, validate requests with the same schemas, and serve an OpenAPI 3.1 document for client generators and API explorers.
 ---
 
-A route can say what it takes and what it answers. `Air.openapi` turns a
+A route can say what it takes and what it returns. `Air.openapi` turns a
 route list into an [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.0)
-document, which client generators, API explorers and contract tests
-read.
+document. Client generators, API explorers, and contract tests read this
+document.
+
+## Describe the routes
+
+1. Write the schemas in defs. See [Validate requests](/docs/guides/validation).
+2. Add notes to each route. Each note is a def that takes a route and
+   returns it with the note, so you nest the calls:
 
 ```python
 def api() -> List<Air.Route()>:
@@ -20,7 +26,25 @@ def api() -> List<Air.Route()>:
         Air.Api.returns(201, task(),
           Air.Api.body(new_task(), Air.Route.post("/tasks", create)))))
   ]
+```
 
+| Note | Validates | Adds to the document |
+| --- | --- | --- |
+| `Air.Api.body(schema, route)` | The JSON body | The request body, and the 400 and 422 responses |
+| `Air.Api.query(schema, route)` | The query | One query parameter for each field of the object schema |
+| `Air.Api.returns(status, schema, route)` | Nothing | A JSON response |
+| `Air.Api.summary(text, route)` | Nothing | The summary |
+| `Air.Api.tag(name, route)` | Nothing | A tag |
+
+You write each schema one time, so the document cannot drift from what
+the route accepts.
+
+## Serve the document
+
+A route list cannot contain a route that describes that same list. So
+build the described list in its own def, and call the def two times:
+
+```python
 def routes() -> List<Air.Route()>:
   Air.Route.all([
     api(),
@@ -28,53 +52,50 @@ def routes() -> List<Air.Route()>:
   ])
 ```
 
-## One schema, two jobs
+```bash
+curl localhost:8080/openapi.json
+```
 
-`Air.Api.body(schema, route)` wraps the route's handler in
-[`Air.validate_json(schema)`](/docs/guides/validation) and records the
-schema as the request body. `Air.Api.query(schema, route)` does the same
-with `validate_query`, and each property of the object schema becomes a
-query parameter. A schema written once cannot drift from the document.
+```text
+{"openapi":"3.1.0","info":{"title":"Tasks","version":"1.0.0"},"servers":[{"url":"/"}],"paths":{"/tasks":{"get":{"operationId":"get_tasks","summary":"List tasks",...
+```
 
-`Air.Api.returns(status, schema, route)`, `Air.Api.summary(text, route)`
-and `Air.Api.tag(name, route)` only add to the document. Path parameters
-need nothing: every `:name` and `*name` in the pattern is listed as a
-string in the path. A `*name` wildcard also gets a note that it may
-contain `/`, since OpenAPI has no multi-segment parameter.
+Each request can build `api()` two times. Notes are plain values, and Air
+renders the JSON only for a request to `/openapi.json`. If routing shows
+up in a profile, write the document to a file with `Air.Api.document`
+and serve the file.
 
-## What the document holds
+## Describe path parameters
 
-- `openapi: 3.1.0`, the title and version you pass, and `servers: [{"url": "/"}]`,
-  so the paths are relative to wherever the document is served.
-- One path item per pattern, with every method registered on it, in
-  route order. Mounting keeps what a route says: `Air.Route.mount("/api", api())`
-  documents `/api/tasks`.
-- Per operation: an `operationId` from the method and path
-  (`post_api_tasks`), the summary, tags, parameters, request body and
-  responses. A route with a body also lists the 400 (not JSON) and the
-  422 (with the shape of the errors list) that validation answers. A
-  route that declares no response gets `default`.
-- Schemas as inline JSON Schema. `int()` is an integer from 0 to
-  4294967295, `obj()` sets `additionalProperties: false`, and
-  `optional` props are left out of `required`.
+You do not add notes for path parameters. Air lists each `:name` and
+`*name` of the pattern as a required string parameter. A `*name` also
+gets a note that it can contain `/`, because OpenAPI has no parameter
+for more than one segment.
 
-## Serving it
+## Mount described routes
 
-A route list cannot contain a route that documents that same list, so
-build the documented list with its own def and call it twice, as above.
-Each request to the app may then build `api()` twice. Notes are plain
-values, and the JSON is only rendered when `/openapi.json` is requested,
-but if routing shows up in a profile, serve the document from a
-separate app or a static file. `Air.Api.document(title, version, routes)` gives the document
-as a JSON value, for writing to a file or testing.
+Mounting keeps the notes. `Air.Route.mount("/api", api())` documents
+`/api/tasks`.
 
-The HEAD and OPTIONS answers the router makes by itself are not listed.
-Routes you register with `Air.Route.head` or `Air.Route.options` are.
+## Show the document in a browser
 
-## Not included
+Swagger UI and Redoc are static pages. Serve one with
+[`Air.static`](/docs/guides/static-files), and point it at
+`/openapi.json`.
 
-Security schemes, examples, `$ref` reuse, headers and cookies as
-parameters, and YAML output. A linter's "every operation should have
-security" rule will warn until security schemes exist. A docs UI such as
-Swagger UI or Redoc is a static page. Serve it with
-[`Air.static`](/docs/guides/static-files), pointed at `/openapi.json`.
+## What the document does not include
+
+The document has no security schemes, examples, `$ref` reuse, header or
+cookie parameters, or YAML output. A linter rule that wants security on
+each operation reports a warning. The document does not list the HEAD and
+OPTIONS responses that the router makes, but it lists the routes that you
+add with `Air.Route.head` and `Air.Route.options`.
+
+For the contents of the document in detail, see
+[What the document contains](/docs/reference/schema#what-the-document-contains).
+
+## Related
+
+- [Schema reference](/docs/reference/schema)
+- [Validate requests](/docs/guides/validation)
+- [Define routes](/docs/guides/routing)

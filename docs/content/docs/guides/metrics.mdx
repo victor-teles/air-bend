@@ -1,18 +1,28 @@
 ---
-title: Metrics
-description: Request counts and a latency histogram per route, in the Prometheus text format.
+title: Expose metrics
+description: Count requests and measure latency for each route of an Air app, serve the numbers in the Prometheus text format, and add your own counters.
 ---
 
-`Air.metrics` is a middleware that counts every request by method,
-route pattern and status, and records how long it took. `Air.Metrics.expose`
-is a handler that answers those numbers in the Prometheus text format,
-which Prometheus, Grafana Agent, the OpenTelemetry Collector and
-VictoriaMetrics can all scrape.
+`Air.metrics` counts each request by method, route, and status, and it
+measures how long each request takes. `Air.Metrics.expose` serves the
+numbers in the Prometheus text format. Prometheus, Grafana Agent, the
+OpenTelemetry Collector, and VictoriaMetrics can read this format.
+
+## Add metrics to an app
+
+1. Put `Air.metrics` first in `Air.use`, so that its time covers the whole
+   chain:
 
 ```python
 def app(req: Air.Request()) -> IO(Air.Response()):
   Air.use([Air.metrics, Air.request_id, Air.log], base)(req)
+```
 
+2. Serve `Air.Metrics.expose` on a route that only you can reach. The
+   output names every route, so put it behind an auth middleware or on a
+   path that your proxy does not expose:
+
+```python
 def routes() -> List<Air.Route()>:
   Air.Route.all([
     app_routes(),
@@ -22,11 +32,11 @@ def routes() -> List<Air.Route()>:
   ])
 ```
 
-Put `Air.metrics` first in the list so its timing covers the whole
-chain. Put the handler behind an auth middleware, or on a path your
-proxy does not expose, because the output names every route.
+3. Send some requests, then read the metrics:
 
-## What it exports
+```bash
+curl -H 'x-token: secret' localhost:8080/admin/metrics
+```
 
 ```text
 # HELP air_http_requests_total Requests answered, by method, route and status.
@@ -42,52 +52,73 @@ air_http_request_duration_seconds_sum{route="/hello/:name"} 0.042
 air_http_request_duration_seconds_count{route="/hello/:name"} 12
 ```
 
-The labels:
+4. Point your scraper at the route. Scrape every instance, because each
+   process keeps its own counts.
 
-| Label | Value |
-| --- | --- |
-| `route` | The pattern of the route that answered, as written, with any mount prefix: `/admin/users/:id`, not `/admin/users/7`. The label is `""` when no route answered: a 404, a 405, an automatic `OPTIONS`, or a response from a middleware outside `dispatch`, such as a CORS preflight answered by `Air.cors`. |
-| `method` | `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH` or `OPTIONS`. Any other method is `OTHER`, because clients choose the method and must not be able to add series. |
-| `status` | The status the app answered. A failed response carries its status whether or not `on_error` has rendered it, so the middleware can go before or after `on_error`. |
+## Read the labels
 
-The buckets are the Prometheus client defaults, 5 ms to 10 s. Durations
-are measured in whole milliseconds, so a sum is exact to the
-millisecond. Series are sorted by key.
+The `route` label is the pattern of the route that ran, with its mount
+prefix, such as `/admin/users/:id`. So `/users/7` and `/users/8` count as
+one series. The label is `""` when no route ran, for example for a 404 or
+a CORS preflight.
 
-A request the server answers itself is not counted, because the app
-never runs. This includes a head that is too large, a malformed request
-and an app timeout (503). The server prints a line for each of those.
+A method that Air does not know is `OTHER`, so a client cannot add
+series. The `status` label is the status of the response. For every label
+and bucket, see the
+[Observability reference](/docs/reference/observability#metrics).
 
-A query such as `rate(air_http_requests_total{status=~"5.."}[5m])`
-gives the error rate per route. Use
-`histogram_quantile(0.99, sum by (le, route) (rate(air_http_request_duration_seconds_bucket[5m])))`
-for the p99 per route.
+## Query the metrics
 
-## App counters
+To get the rate of 5xx responses for each route, use:
 
-```python
-Air.Metrics.count(req, "signups")
+```text
+sum by (route) (rate(air_http_requests_total{status=~"5.."}[5m]))
 ```
 
-This adds one to `app_signups_total`. The name must match `[a-z0-9_]+`.
-Air ignores any other name, so a typo cannot produce an invalid
-exposition. App counters have no labels in this version.
+To get the 99th percentile latency for each route, use:
 
-## Where the numbers live
+```text
+histogram_quantile(0.99, sum by (le, route) (rate(air_http_request_duration_seconds_bucket[5m])))
+```
 
-The counts are in the [store](/docs/guides/shared-state), in the
-`metrics` namespace. Each request takes the store lock once. The numbers
-last as long as the process. A restart resets them, and Prometheus's
-`rate()` handles that reset. Each process has its own store, so scrape
-every instance.
+## Count your own events
 
-The route label reaches the middleware on the response. When a route
-answers, the router sets the internal `air-route` header to the route's
-pattern. The server removes that header before it writes the response,
-and `Air.Test.inject` removes it too, so it never reaches a client. Your
-own middleware can read the header with `Air.Response.route(res)`.
+To count an event of your app, call `Air.Metrics.count` in a handler:
 
-The number of series grows with the number of routes times the methods
-and statuses each route answers. A fixed route table keeps the count
-bounded. An app that generates thousands of routes produces thousands
-of series.
+```python
+def signup.fin(u: Unit) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.with_status(Air.Response.text("welcome"), 201))
+
+def signup(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(Unit, Air.Response(), Air.Metrics.count(req, "signups"), signup.fin)
+```
+
+This call adds one to `app_signups_total`. The name must match
+`[a-z0-9_]+`. Air ignores any other name, so a typo cannot break the
+output. App counters have no labels.
+
+## What Air does not count
+
+Air does not count a server refusal, such as a head that is too large, a
+malformed request, or an app timeout (503). The app does not run for
+these requests. The server prints a line for each one instead.
+
+## How Air keeps the numbers
+
+The counts are in the `metrics` namespace of the store. Each request takes
+the store lock one time. A restart sets the counts to zero, and the
+Prometheus `rate()` function handles the reset.
+
+The router puts the route pattern on the response, and `Air.metrics`
+reads it there. The server removes it before it writes the response, so
+it never reaches a client. Your own middleware can read it with
+`Air.Response.route(res)`.
+
+The number of series grows with the number of routes, times the methods
+and statuses of each route. A fixed route list keeps the count bounded.
+
+## Related
+
+- [Observability reference](/docs/reference/observability)
+- [Trace requests](/docs/guides/tracing)
+- [Add request ids and logs](/docs/guides/request-ids-and-logging)

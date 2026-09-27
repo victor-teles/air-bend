@@ -1,0 +1,200 @@
+---
+title: Read request data
+description: Read headers, query parameters, JSON bodies, forms, file uploads, and cookies in an Air handler, and choose a response format from the Accept header.
+---
+
+A handler gets the request as its parameter. The `Air.Request.*` defs read
+each part of it. Every def returns `""`, `[]`, or `None` for absent data,
+so a handler never fails on a missing value. For every def and edge case,
+see the [Request reference](/docs/reference/request).
+
+## Read the request more than one time
+
+A handler parameter is affine: you can use it only one time. To read two
+values from the request, rebind it with `+` at the start of the handler:
+
+```python
+def whoami(req: Air.Request()) -> IO(Air.Response()):
+  +req = req
+  IO.pure(Air.Response(), Air.Response.text(
+    Air.Request.header(req, "user-agent") ++ " at " ++ Air.Request.path(req)))
+```
+
+## Read a header
+
+To read a header, call `Air.Request.header` with its name. The name is not
+case-sensitive:
+
+```python
+Air.Request.header(req, "x-token")
+```
+
+When the client sends the header more than one time, Air joins the values
+with `, `.
+
+## Read query parameters
+
+To read a query parameter, call `Air.Request.query`. Air decodes percent
+escapes and reads `+` as a space:
+
+```python
+def search(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("q=" ++ Air.Request.query(req, "q")))
+```
+
+```bash
+curl 'localhost:8080/search?q=bend+lang'
+```
+
+```text
+q=bend lang
+```
+
+When a key appears more than one time, `Air.Request.query` returns the
+last value. To get every value, call `Air.Request.query_all`:
+`?tag=a&tag=b` returns `["a", "b"]`.
+
+## Read a JSON body
+
+To read a JSON body, call `Air.Request.json`. It returns `None` when the
+content type is not JSON or the body does not parse:
+
+```python
+def create.go(found: Maybe<&2, Air.Json()>) -> IO(Air.Response()):
+  match found:
+    case Some{body}:
+      IO.pure(Air.Response(), Air.Response.with_status(Air.Response.of_json(body), 201))
+    case None{}:
+      Air.fail(Air.Error.bad_request("send a JSON body"))
+
+def create(req: Air.Request()) -> IO(Air.Response()):
+  create.go(Air.Request.json(req))
+```
+
+```bash
+curl -H 'content-type: application/json' -d '{"title":"Buy milk"}' localhost:8080/notes
+```
+
+```text
+{"title":"Buy milk"}
+```
+
+To read fields, use `Air.Json.get` and `Air.Json.str`. To check the shape
+of the body before the handler runs, use `Air.validate_json`. See
+[Validate requests](/docs/guides/validation).
+
+## Read a form
+
+To read an HTML form sent as `application/x-www-form-urlencoded`, call
+`Air.Request.form`:
+
+```python
+def form(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("Olá, " ++ Air.Request.form(req, "name") ++ "!"))
+```
+
+```bash
+curl -d 'name=Ada+Lovelace' localhost:8080/form
+```
+
+```text
+Olá, Ada Lovelace!
+```
+
+## Read a file upload
+
+To read a `multipart/form-data` body, call `Air.Request.parts`. Then
+`Air.Part.field` reads a plain field, and `Air.Part.file` finds a file:
+
+```python
+def upload.go(found: Maybe<&2, List<&2, Air.Part()>>) -> IO(Air.Response()):
+  match found:
+    case Some{parts}:
+      +parts = parts
+      IO.pure(Air.Response(), Air.Response.text("title: " ++ Air.Part.field(parts, "title")))
+    case None{}:
+      Air.fail(Air.Error.bad_request("send multipart/form-data"))
+
+def upload(req: Air.Request()) -> IO(Air.Response()):
+  upload.go(Air.Request.parts(req))
+```
+
+<Callout type="warn">
+Do not accept binary uploads, such as images. Bend reads socket data as
+UTF-8 text, so Air does not keep the bytes of a binary file.
+</Callout>
+
+## Read a cookie
+
+To read a cookie, call `Air.Request.cookie`:
+
+```python
+def theme(req: Air.Request()) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text(Air.Request.cookie(req, "theme")))
+```
+
+```bash
+curl -b 'theme=dark' localhost:8080/theme
+```
+
+```text
+dark
+```
+
+To set a cookie, see [Send responses](/docs/guides/responses).
+
+## Choose a format from the Accept header
+
+To choose between formats, call `Air.Request.accepts` with the formats
+that you can send. It returns the format that the client prefers, or
+`None` when the client accepts none of them:
+
+```python
+def report.pick(html: Bool) -> IO(Air.Response()):
+  match html:
+    case True{}:
+      IO.pure(Air.Response(), Air.Response.html("<p>ok</p>"))
+    case False{}:
+      IO.pure(Air.Response(), Air.Response.json("{\"status\":\"ok\"}"))
+
+def report.go(choice: Maybe<&2, String>) -> IO(Air.Response()):
+  match choice:
+    case Some{format}:
+      report.pick(String.eq(format, "text/html"))
+    case None{}:
+      Air.fail(Air.Error.other(406, "no acceptable format"))
+
+def report(req: Air.Request()) -> IO(Air.Response()):
+  report.go(Air.Request.accepts(req, ["application/json", "text/html"]))
+```
+
+Bend has no `if`, so `report.go` passes the comparison to a helper def,
+`report.pick`, that matches on it.
+
+Without an `Accept` header, `Air.Request.accepts` returns the first
+format. `Air.Request.accepts_language` and
+`Air.Request.accepts_encoding` work the same way.
+
+## Read the client address behind a proxy
+
+Bend gives no client address for a TCP connection. When Air runs behind a
+proxy that sets `X-Forwarded-For`, read the address with a trusted proxy:
+
+```python
+Air.Request.client_ip(req, Air.Trust.proxy())
+```
+
+<Callout type="warn">
+Use `Air.Trust.proxy()` only when clients can reach Air through the proxy
+and in no other way. Otherwise, a client can send a false address.
+</Callout>
+
+`Air.Request.host` and `Air.Request.scheme` read the original host and
+scheme in the same way. See [Run Air in production](/docs/guides/deploy).
+
+## Related
+
+- [Request reference](/docs/reference/request)
+- [Send responses](/docs/guides/responses)
+- [Validate requests](/docs/guides/validation)
+- [Add sessions](/docs/guides/sessions)

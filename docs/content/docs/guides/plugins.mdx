@@ -1,51 +1,16 @@
 ---
-title: Plugins
-description: Package routes, middleware and state as a group that stays in its own scope.
+title: Package routes as a plugin
+description: Package the routes, middleware, and state of one feature as an Air plugin that stays in its own scope.
 ---
 
-A plugin is a def that returns routes:
+A plugin is a def that returns a route list. It packages the routes,
+middleware, and state of one feature. The app decides where to mount it.
+Air has no plugin API: the rules in this guide come from how routes work.
 
-```python
-def status_plugin(+prefix: String) -> List<Air.Route()>:
-  Air.Route.mount(prefix, Air.Route.wrap(~Air.on_send(no_cache), [
-    Air.Route.get("/", status),
-    Air.Route.get("/visits", visits)
-  ]))
-```
+## Write a plugin
 
-An app puts plugins together with `Air.Route.all`:
-
-```python
-def routes() -> List<Air.Route()>:
-  Air.Route.all([
-    app_routes(),
-    status_plugin("/status"),
-    admin_plugin()
-  ])
-```
-
-## Encapsulation
-
-The rules follow from how routes work, with no plugin machinery:
-
-1. **Middleware stays in the plugin.** `Air.Route.wrap(~mw, routes)`
-   wraps those routes only. A hook or an auth check inside a plugin
-   never runs for the app's other routes.
-2. **Paths stay under a prefix.** `Air.Route.mount(prefix, routes)`
-   puts every route of the plugin under `prefix`. Take the prefix as an
-   argument so the app decides where the plugin lives.
-3. **State goes in its own namespace.** The store is shared, so name
-   the namespace after the plugin:
-   `Air.Store.incr(req, "status_plugin", "visits")`.
-4. **Locals are prefixed.** A local the plugin sets for its handlers is
-   named `status_plugin.user`, not `user`.
-5. **Collisions fail at startup.** `Air.Route.check(routes())` in `main`
-   ends the process when two plugins register the same method and path.
-
-There is no `decorate`. A plugin shares values with its handlers through
-locals and the store.
-
-## A complete plugin
+This plugin adds a status page and a visit counter. Each response of the
+plugin gets `cache-control: no-store`:
 
 ```python
 def no_cache(req: Air.Request(), res: Air.Response()) -> IO(Air.Response()):
@@ -67,8 +32,64 @@ def status_plugin(+prefix: String) -> List<Air.Route()>:
   ]))
 ```
 
-A plugin that needs a setting takes it as an argument. If the setting
-changes per deployment, read it inside the handler with
-[`Air.Config.get`](/docs/guides/configuration): route lists are rebuilt
-per request, and the app is a closed template, so a value from `main`
-cannot be passed in.
+## Add a plugin to an app
+
+To add a plugin, put its route list in `Air.Route.all` with the other
+route lists:
+
+```python
+def routes() -> List<Air.Route()>:
+  Air.Route.all([
+    app_routes(),
+    status_plugin("/status")
+  ])
+```
+
+```bash
+curl localhost:8080/status/visits
+curl localhost:8080/status/visits
+```
+
+```text
+1
+2
+```
+
+## Keep a plugin in its own scope
+
+Follow these rules, so that a plugin does not change the rest of the app:
+
+1. **Wrap only the plugin routes.** `Air.Route.wrap(~mw, routes)` applies
+   `mw` to those routes only. A hook or an auth check in a plugin does
+   not run for the other routes of the app.
+2. **Take the prefix as an argument.** `Air.Route.mount(prefix, routes)`
+   puts every route of the plugin under `prefix`. The app decides where
+   the plugin lives.
+3. **Name the store namespace after the plugin.** All plugins share the
+   store, so use a namespace such as `status_plugin`. Do not use the
+   namespaces that Air reserves. See
+   [Reserved namespaces](/docs/reference/state#reserved-namespaces).
+4. **Put a prefix on request locals.** Name a request local
+   `status_plugin.user`, not `user`.
+5. **Check for conflicts at startup.** Call `Air.Route.check(routes())` in
+   `main`. It ends the process when two plugins add the same method and
+   pattern.
+
+## Give a plugin a setting
+
+A plugin that needs a setting takes it as an argument, like `prefix`. When
+the setting changes for each deployment, read it in the handler with
+`Air.Config.get`. The app is a closed template, so a value that `main`
+reads cannot reach the plugin. See
+[Configure Air from the environment](/docs/guides/configuration).
+
+## Share values with plugin handlers
+
+Air has no `decorate`. A plugin shares values with its handlers through
+request locals and the store.
+
+## Related
+
+- [Define routes](/docs/guides/routing)
+- [Write middleware](/docs/guides/middleware)
+- [Store shared state](/docs/guides/shared-state)

@@ -1,0 +1,17 @@
+{
+  "title": "Reference",
+  "pages": [
+    "server",
+    "settings",
+    "routing",
+    "request",
+    "response",
+    "middleware",
+    "errors",
+    "json",
+    "schema",
+    "state",
+    "observability",
+    "test"
+  ]
+}

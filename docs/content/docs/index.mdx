@@ -1,9 +1,20 @@
 ---
-title: Getting started
-description: A web framework for Bend.
+title: Overview
+description: What Air is, what it includes, and which page to read for your goal.
 ---
 
-Air is a web framework for [Bend](https://bend-lang.com).
+Air is a web framework for [Bend](https://bend-lang.com). It serves
+HTTP/1.1 over TCP and gives you routing, middleware, and the parts that
+most web apps need. You write the app in Bend, and Air runs it on a
+server that you start from `main`.
+
+Air is for developers who write services in Bend and want the same tools
+that a Node or Python framework gives. Air runs behind a TLS proxy, such as
+nginx or Caddy. Air does not do TLS itself.
+
+## A complete app
+
+This program serves one route with a path parameter:
 
 ```python title="main.bend"
 import Base
@@ -22,9 +33,40 @@ def main() -> IO(Unit):
   Air.serve(~app, 8080)
 ```
 
-Run the starter example and send it a request:
+To run it, put `main.bend` next to `air.bend` and start it:
 
 ```bash
-bend examples/hello/main.bend
+bend main.bend
 curl localhost:8080/hello/world
 ```
+
+```text
+hi world
+```
+
+## What Air includes
+
+| Area | What you get |
+| --- | --- |
+| Routing | [Path parameters, wildcards, prefixes, and 404, 405, HEAD, and OPTIONS responses](/docs/guides/routing) |
+| Requests and responses | [Headers, query parameters, forms, cookies, and content negotiation](/docs/guides/requests), and [text, HTML, JSON, redirects, and files](/docs/guides/responses) |
+| Middleware | [Your own middleware](/docs/guides/middleware), [lifecycle hooks](/docs/guides/hooks), and [plugins](/docs/guides/plugins) |
+| Errors | [Errors as values, rendered as text or JSON](/docs/guides/errors) |
+| Data | [JSON schema validation](/docs/guides/validation), [templates](/docs/guides/templates), and [OpenAPI documents](/docs/guides/openapi) |
+| State | [A shared store](/docs/guides/shared-state), [sessions](/docs/guides/sessions), and [rate limits](/docs/guides/rate-limiting) |
+| Content | [Static files](/docs/guides/static-files) and [streaming with Server-Sent Events](/docs/guides/streaming) |
+| Security | [CORS and security headers](/docs/guides/cors-and-security-headers) |
+| Operations | [Settings from the environment](/docs/guides/configuration), [request ids and logs](/docs/guides/request-ids-and-logging), [health checks](/docs/guides/health), [metrics](/docs/guides/metrics), [tracing](/docs/guides/tracing), and [production deployment](/docs/guides/deploy) |
+| Testing | [Tests that run the app without a socket](/docs/guides/testing) |
+
+## Where to go next
+
+| Your goal | Read |
+| --- | --- |
+| Learn Air by building an app | [Build your first Air app](/docs/tutorial/first-app) |
+| Do one task, such as add sessions | The page for that task in the guides, for example [Add sessions](/docs/guides/sessions) |
+| Look up a def, a parameter, or a default | The reference, starting with [Routing reference](/docs/reference/routing) |
+| Look up an environment variable | [Settings reference](/docs/reference/settings) |
+| Understand how Air handles a request | [How a request moves through Air](/docs/concepts/lifecycle) |
+| Understand why Air works as it does | [How Bend shapes Air](/docs/concepts/bend) |
+| Know what Air does not do | [Limitations](/docs/project/not-yet) |

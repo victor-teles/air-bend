@@ -1,0 +1,205 @@
+---
+title: Run Air in production
+description: Build an Air app as a native binary, run it behind a TLS proxy, set it up from the environment, and stop it without dropping requests.
+---
+
+This guide shows how to run an Air app for real traffic. You build a
+native binary, put a TLS proxy in front of it, set it up with environment
+variables, and stop it in a way that finishes the requests in flight.
+
+## Build a native binary
+
+`bend main.bend` checks the program each time it starts, which takes
+seconds. A native binary starts at once.
+
+1. Install clang. CI uses clang 19.
+2. Make the output folder. `bend -o` does not make it:
+
+```bash
+mkdir -p out
+```
+
+3. Build the binary:
+
+```bash
+bend examples/hello/main.bend -o out/hello
+```
+
+The build takes about a minute. It prints
+`All terms check, but 1 def relies on unsafe or foreign code` when the
+app uses `Air.log` or another def that reads the wall clock. You can
+ignore this message.
+
+4. Run the binary:
+
+```bash
+PORT=9191 ./out/hello
+```
+
+```text
+air: listening on http://localhost:9191
+```
+
+After you add or rename a def in `air.bend`, build the examples natively.
+Some name conflicts show only in a native build.
+
+## Set the server up from the environment
+
+To read the port, limits, and timeouts from the environment, serve the app
+with `Air.serve_env`:
+
+```python
+def main() -> IO(Unit):
+  do IO<Unit>:
+    Air.Route.check(routes())
+    Air.serve_env(~app, 8080)
+```
+
+Then set the variables when you start the binary:
+
+```bash
+PORT=9191 AIR_MAX_BODY=10485760 AIR_TIMEOUT_APP=10000 ./out/app
+```
+
+A variable that is not a number stops the process before it listens. For
+every variable, see the [Settings reference](/docs/reference/settings).
+
+## Put a TLS proxy in front of Air
+
+Air serves plain HTTP. It does not do TLS. Run a proxy, such as Caddy or
+nginx, that ends TLS and sends requests to Air on the same machine.
+
+With Caddy:
+
+```text title="Caddyfile"
+app.example.com {
+  reverse_proxy 127.0.0.1:9191
+}
+```
+
+With nginx:
+
+```nginx title="nginx.conf"
+server {
+  listen 443 ssl;
+  server_name app.example.com;
+
+  location / {
+    proxy_pass http://127.0.0.1:9191;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;
+  }
+}
+```
+
+`proxy_buffering off` lets streamed responses and Server-Sent Events reach
+the client as Air sends them.
+
+## Trust the proxy headers
+
+Bend gives no client address for a TCP connection. The proxy sends the
+client address in `X-Forwarded-For`. To read it, pass `Air.Trust.proxy()`:
+
+```python
+Air.Request.client_ip(req, Air.Trust.proxy())
+Air.Rate.by_ip(Air.Trust.proxy())
+```
+
+<Callout type="warn">
+Before you use `Air.Trust.proxy()`, make sure that clients cannot reach
+the Air port without the proxy. Otherwise, a client can send a false
+address and avoid rate limits.
+</Callout>
+
+Without a trusted proxy, `Air.Rate.by_ip` puts every client in one
+bucket.
+
+## Turn on HTTPS-only features
+
+When clients reach Air only through HTTPS, turn on these settings:
+
+- `Air.Shield.with_hsts(Air.Shield.default(), 31536000)` adds
+  `Strict-Transport-Security`.
+- `Air.Session.secure(cfg, True{})` adds `Secure` to the session cookie.
+- `Air.Cookie.secure(c, True{})` adds `Secure` to your own cookies.
+
+## Stop the server without dropping requests
+
+Bend has no signal handling. When the process gets `SIGTERM` or `SIGINT`,
+it ends at once, and requests in flight fail. To stop the server cleanly,
+flip the stop switch from inside the process.
+
+1. Serve the app with `Air.serve_env_until`, and give the app the stop
+   switch:
+
+```python
+def stop(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
+  do IO<Air.Response()>:
+    Air.Switch.flip(switch)
+    return Air.Response.text("stopping")
+
+def routes(+switch: Air.Switch()) -> List<Air.Route()>:
+  Air.Route.all([
+    Air.health(),
+    Air.Route.mount("/internal", Air.Route.wrap(~auth("secret"), [Air.Route.post("/stop", stop(switch))])),
+    app_routes()
+  ])
+
+def app(switch: Air.Switch(), req: Air.Request()) -> IO(Air.Response()):
+  Air.dispatch(routes(switch), req)
+
+def main() -> IO(Unit):
+  do IO<Unit>:
+    switch : Air.Switch() <- Air.Switch.new()
+    Air.serve_env_until(~app, switch, 8080)
+    Air.exit(0)
+```
+
+2. Protect the stop route with an auth middleware, such as `auth` in
+   [Write middleware](/docs/guides/middleware).
+3. Before your process manager stops the process, send a request to the
+   stop route. For example, in a Kubernetes `preStop` hook, run:
+
+```bash
+curl -X POST -H 'x-token: secret' localhost:8080/internal/stop
+```
+
+After the flip, the server prints `air: stopping`, finishes the requests
+in flight, prints `air: stopped`, and `Air.exit(0)` ends the process.
+
+## Drain behind a load balancer
+
+A load balancer sends traffic to an instance until its readiness check
+fails. To give the balancer time to see that the instance is stopping, set
+a drain delay:
+
+1. Add `Air.health()` to your routes.
+2. Point the readiness check of the balancer at `/readyz`.
+3. Set `AIR_DRAIN_DELAY` to a time longer than the check interval times
+   the number of failed checks that the balancer waits for. For a check
+   every 2 seconds that acts after 2 failures, use at least 5000.
+
+After the stop switch flips, `/readyz` responds with 503 at once. The
+server continues to serve for the drain delay, then stops accepting
+connections. For details, see [Add health checks](/docs/guides/health).
+
+## Know the limits before you deploy
+
+- Air reads request bodies and files as UTF-8 text. Do not accept binary
+  uploads or serve images from Air.
+- Air cannot cancel a receive. A client that stops sending holds its
+  connection until the client closes it. Set a timeout on the proxy.
+- Air closes a connection after 100000 requests.
+
+For the complete list, see [Limitations](/docs/project/not-yet).
+
+## Related
+
+- [Server reference](/docs/reference/server)
+- [Settings reference](/docs/reference/settings)
+- [Configure Air from the environment](/docs/guides/configuration)
+- [Add health checks](/docs/guides/health)

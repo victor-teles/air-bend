@@ -1,49 +1,46 @@
 ---
-title: Health and readiness
-description: /healthz and /readyz for load balancers, and draining before a stop.
+title: Add health checks
+description: Add /healthz and /readyz to an Air app for load balancers and orchestrators, mark readiness checks up or down, and drain before a stop.
 ---
 
-`Air.health()` is two routes, a [plugin](/docs/guides/plugins) to mount
-with the app's own:
+`Air.health()` adds two routes that a load balancer or an orchestrator
+reads: `/healthz` says whether the process serves, and `/readyz` says
+whether it should get traffic now. This guide shows how to add them, how
+to report the state of a dependency, and how to drain before a stop.
+
+## Add the health routes
+
+To add the routes, join `Air.health()` with your route lists:
 
 ```python
 def routes() -> List<Air.Route()>:
   Air.Route.all([Air.health(), app_routes()])
 ```
 
-| Route | Answers |
+```bash
+curl localhost:8080/healthz
+curl localhost:8080/readyz
+```
+
+```text
+{"status":"ok"}
+{"status":"ready"}
+```
+
+| Route | Response |
 | --- | --- |
 | `GET /healthz` | 200 `{"status":"ok"}` while the process serves |
-| `GET /readyz` | 200 `{"status":"ready"}`, or 503 `{"status":"draining"}` while the server stops, or 503 `{"status":"not ready","down":["cache"]}` while a check is down |
+| `GET /readyz` | 200 `{"status":"ready"}`, or 503 `{"status":"draining"}` while the server stops, or 503 `{"status":"not ready","down":["cache"]}` while a readiness check is down |
 
-Both send `cache-control: no-store`, and HEAD works on both. Point an
-orchestrator's liveness probe at `/healthz` and its readiness probe at
-`/readyz`.
+Both routes send `cache-control: no-store`, and both accept `HEAD`. Point
+the liveness probe of your orchestrator at `/healthz` and its readiness
+probe at `/readyz`.
 
-## Draining
+## Report the state of a dependency
 
-When the stop switch flips (see `serve_until`), the server:
-
-1. marks itself draining, so `/readyz` answers 503;
-2. keeps serving for the drain delay, so a balancer's probe sees the
-   503 and stops sending traffic;
-3. stops accepting connections and refuses new requests with a plain 503;
-4. waits up to the drain timeout for the requests in flight, then returns.
-
-The drain delay is 0 unless set, and then steps 2 and 3 happen at once,
-as they did before readiness existed. Set it with
-`AIR_DRAIN_DELAY` (milliseconds) under
-[`serve_env`](/docs/guides/configuration), or in `main` with
-`Air.Ready.delay(store, 5000)` on the store you pass to `serve_shared`.
-The delay should exceed the balancer's probe interval times the number
-of failures it waits for. For a probe every 2 s that acts after 2
-failures, use at least 5000.
-
-## Checks
-
-A check is a name in the store. Mark it down and `/readyz` answers 503
-and lists it. Mark it up and it is ready again. An app that never marks
-a check is ready whenever it is not draining.
+A readiness check is a name in the store. When you mark it down, `/readyz`
+responds with 503 and lists it. When you mark it up, the app is ready
+again. An app that marks no check is ready whenever it is not stopping.
 
 ```python
 Air.Ready.down(store, "cache")      # in main, or a background task
@@ -52,11 +49,23 @@ Air.Ready.up(store, "cache")
 Air.Ready.down_in(req, "cache")     # in a handler
 ```
 
-`/readyz` never runs a check itself: a probe that does I/O under load
-makes an outage worse. Run the check in a background task instead and
-mark the result:
+## Run a readiness check in the background
+
+`/readyz` never runs a check itself, because a probe that does I/O under
+load makes an outage worse. Run the check in a background task instead,
+and mark the result:
+
+1. Write a loop that checks the dependency and marks the result. `fuel`
+   limits the number of rounds, because Bend requires every loop to end:
 
 ```python
+def mark(+store: Air.Store(), ok: Bool) -> IO(Unit):
+  match ok:
+    case True{}:
+      Air.Ready.up(store, "database")
+    case False{}:
+      Air.Ready.down(store, "database")
+
 def watch(fuel: Nat, +store: Air.Store()) -> IO(Unit):
   match fuel:
     case 0n:
@@ -69,19 +78,68 @@ def watch(fuel: Nat, +store: Air.Store()) -> IO(Unit):
         watch(p, store)
 ```
 
-Start it with `IO.spawn` in `main`, on the same store you give to
-`serve_shared`. Here `mark` calls `Air.Ready.up` or `Air.Ready.down`,
-and `ping_database` is your own check.
+   `ping_database` is your own check.
 
-## Keeping probes out of logs
+2. Make a store in `main`, and pass it to a def that starts the loop with
+   `IO.spawn` and gives the same store to `Air.serve_shared`:
 
-`Air.health()` is an ordinary route group, so a probe runs through
-whatever wraps the app, `Air.log` included. To keep probes out of the
-log, wrap the app's routes instead of the whole app:
+```python
+def serve(store: Air.Store()) -> IO(Unit):
+  +store = store
+  do IO<Unit>:
+    switch : Air.Switch() <- Air.Switch.new()
+    IO.spawn(Unit, watch(1000000n, store))
+    Air.serve_shared(~app, Air.Limits.default(), Air.Timeouts.default(), store, switch, 8080)
+
+def main() -> IO(Unit):
+  IO.bind(Air.Store(), Unit, Air.Store.new(), serve)
+```
+
+   A value that a do-block binds can be used only one time, so `main`
+   gives the store to `serve`, which rebinds it with `+`.
+   `Air.serve_shared` takes an app that receives the stop switch, such as
+   `def app(switch: Air.Switch(), req: Air.Request())`.
+
+## Drain before a stop
+
+When the stop switch flips, the server does these steps:
+
+1. It marks itself as draining, so `/readyz` responds with 503.
+2. It continues to serve for the drain delay. During this time, the
+   probe of the load balancer sees the 503 and stops sending traffic.
+3. It stops accepting connections, and it responds to new requests with
+   503.
+4. It waits up to the drain timeout for the requests in flight, and then
+   returns.
+
+The drain delay is 0 by default, so steps 2 and 3 happen at the same
+time. To set the drain delay, do one of these:
+
+- Under `Air.serve_env`, set `AIR_DRAIN_DELAY` in milliseconds.
+- In `main`, call `Air.Ready.delay(store, 5000)` on the store that you
+  give to `Air.serve_shared`.
+
+Make the delay longer than the probe interval times the number of failed
+probes that the balancer waits for. For a probe every 2 seconds that acts
+after 2 failures, use at least 5000. To flip the stop switch, see
+[Run Air in production](/docs/guides/deploy#stop-the-server-without-dropping-requests).
+
+## Keep probes out of the log
+
+`Air.health()` is an ordinary route list, so each probe goes through the
+middleware around the app, including `Air.log`. To keep probes out of the
+log, wrap only your own routes with `Air.log`:
 
 ```python
 def routes() -> List<Air.Route()>:
   Air.Route.all([Air.health(), Air.Route.wrap(~Air.log, app_routes())])
 ```
 
-Requests that match no route (404, 405) are then not logged either.
+With this change, Air also does not log requests that match no route
+(404 and 405).
+
+## Related
+
+- [State reference](/docs/reference/state#readiness-checks)
+- [Server reference](/docs/reference/server)
+- [Run Air in production](/docs/guides/deploy)

@@ -1,0 +1,177 @@
+---
+title: How a request moves through Air
+description: What the Air server does with a connection and a request, from accept to write, including limits, timeouts, the middleware chain, errors, streaming, and draining.
+---
+
+This page explains what the Air server does between the moment a client
+connects and the moment the response is on the wire. Knowing this path
+helps you choose where to put middleware, which limits to set, and which
+responses your app can change.
+
+## The path of one request
+
+For each request on a connection, the server does these steps:
+
+1. It reads the head, under the idle and head timeouts.
+2. It parses the head. A malformed head, or a head over a limit, gets a
+   server refusal (400, 414, 431, or 505).
+3. It passes the stop gate. A stopping server responds with 503.
+4. It reads the body, under the body timeout. A body over the limit, or
+   with bad framing, gets a server refusal (400, 413, or 501).
+5. It runs the app, under the app timeout. When the timeout ends first,
+   the client gets 503.
+6. It settles the response.
+7. It writes the response, under the send timeout. When the connection
+   stays open, it goes back to step 1.
+
+## Connections
+
+The server accepts each TCP connection and runs it as its own
+computation. A slow client holds only its own computation, so it does not
+block the other clients.
+
+A connection serves requests in turn. The server keeps the connection
+open for the next request when both the request and the response allow
+it: HTTP/1.1 keeps it open unless one side sends `Connection: close`, and
+HTTP/1.0 keeps it open only with `Connection: keep-alive`. The server
+reads pipelined requests from the bytes that it already has. After 100000
+requests, the server closes the connection.
+
+Each connection has one watchdog clock. The server sets the clock again
+at the start of each phase, so the number of timers does not grow with
+the number of requests.
+
+## Reading the head
+
+The server reads bytes until the blank line that ends the head. Two
+timeouts apply:
+
+- While no byte of the next request has arrived, the idle timeout applies
+  (`AIR_TIMEOUT_IDLE`, 15 seconds by default).
+- After the first byte, the head timeout applies (`AIR_TIMEOUT_HEAD`, 10
+  seconds by default).
+
+When a timeout ends, the server closes the connection without a response.
+When the head grows past the head limit (16 KiB by default), the server
+responds with 431 and closes the connection.
+
+## Parsing and the normal path
+
+The server parses the request line and the headers. It refuses a request
+in this order: 414 for a URL over the limit, 505 for a version that is not
+`HTTP/1.x`, 431 for too many header lines, and 400 for a bad header, path,
+or query.
+
+The server then makes the normal form of the path. It decodes percent
+escapes, resolves `.` and `..`, and makes repeated slashes into one slash.
+A path that climbs above the root, or that has a bad escape or `%00`, gets
+400. The router matches routes against this normal form, so a handler
+never sees `..` or a raw escape.
+
+## Reading the body
+
+The server decides how the body is framed from the head alone:
+
+| Head | Body |
+| --- | --- |
+| No `Content-Length` and no `Transfer-Encoding` | No body |
+| `Content-Length: n` | `n` bytes |
+| `Transfer-Encoding: chunked` | Chunks until the last chunk |
+| Both headers, or a repeated or non-number `Content-Length` | 400 |
+| Another `Transfer-Encoding` | 501 |
+
+The body timeout (`AIR_TIMEOUT_BODY`, 30 seconds by default) applies while
+the server reads the body. A body over the limit (1 MiB by default) gets
+413. For `Expect: 100-continue`, the server sends `100 Continue` before it
+reads the body. The server decodes chunked bodies, so the app always gets
+the plain body.
+
+## The stop gate
+
+Before the server runs the app, the request passes a gate. While the
+server runs normally, the gate counts the request as in flight. When the
+server is stopping, the gate is closed, and the request gets a 503. The
+count of requests in flight tells a stopping server when it can return.
+
+## Running the app
+
+The server gives the app the request, with the body and the store
+attached. The app is one handler, usually built with `Air.use`. Each
+middleware in `Air.use` wraps the next one, like layers of an onion:
+
+```text
+request  -> request_id -> log -> on_error -> dispatch -> handler
+response <- request_id <- log <- on_error <- dispatch <- handler
+```
+
+The first middleware in the list sees the request first and the response
+last. `Air.dispatch` picks the route and runs its handler. A middleware
+from `Air.Route.wrap` runs inside `Air.dispatch`, after routing.
+
+The app timeout (`AIR_TIMEOUT_APP`, 30 seconds by default) races the app.
+When the timeout wins, the client gets a 503, and the server drops the
+response of the app. Bend cannot cancel an effect, so the handler
+continues to run in its own computation until it ends.
+
+## Errors as values
+
+A handler that fails returns a failed response: a response that carries
+an `Air.Error()` and has no body yet. The failed response travels back
+through the middleware like any other response. `Air.on_error` renders it
+into the response that the client gets. Middleware outside
+`Air.on_error` see the rendered response, and middleware inside it see
+the error.
+
+The server's own refusals do not travel through the app. The app never
+runs for them, so `Air.on_error`, `Air.log`, and `Air.metrics` do not see
+them. The server prints its own line for each one.
+
+## Settling the response
+
+Before it writes, the server settles the response:
+
+- A failed response that no middleware rendered becomes the reason phrase
+  as plain text, as in `prod` mode. The detail never reaches the client.
+- The server removes the route pattern that `Air.dispatch` put on the
+  response for `Air.metrics` and `Air.trace`.
+- A response to `HEAD`, and a 1xx, 204, or 304 response, has no body on
+  the wire.
+
+`Air.Test.inject` settles a response in the same way, so a test sees what
+a client would see.
+
+## Writing the response
+
+The server writes the response under the send timeout
+(`AIR_TIMEOUT_SEND`, 30 seconds by default). No app code runs after the
+write, so an app never learns that a write failed. `Air.on_response` runs
+before the write.
+
+For a streamed response, the server writes the head, then each piece that
+the producer sends, as one chunk. The send timeout applies to each piece.
+The server takes the next piece only after the previous piece is written,
+so a slow client slows the producer. When the client leaves, the server
+closes the channel, and the next send of the producer returns `False`.
+See [Stream responses](/docs/guides/streaming).
+
+## Stopping
+
+`Air.serve_until`, `Air.serve_shared`, and `Air.serve_env_until` stop when
+the stop switch flips:
+
+1. The server marks the store as draining, so `/readyz` responds with 503.
+2. The server waits for the drain delay while it continues to serve.
+3. The server closes the gate. New requests get 503, and the server
+   accepts no new connections.
+4. The server waits up to the drain timeout for the requests in flight,
+   and then the serve def returns.
+
+Connections that are idle between requests are not waited for. Call
+`Air.exit` after the serve def returns to end them. See
+[Run Air in production](/docs/guides/deploy).
+
+## Related
+
+- [Server reference](/docs/reference/server)
+- [Settings reference](/docs/reference/settings)
+- [How Bend shapes Air](/docs/concepts/bend)

@@ -1,21 +1,125 @@
 ---
-title: Shared state
-description: The server's store, reached through the request.
+title: Store shared state
+description: Keep counters and other data between requests in the Air store, update a namespace atomically, and share the store with a background task.
 ---
 
-Bend has no globals, and the app is a template argument that must be a
-closed term, so state cannot be threaded in from `main`. Instead every
-request carries the server's store: namespaces of string maps behind a
-lock, reached through the request.
+Bend has no global variables, and the app is a closed template, so `main`
+cannot pass state into the app. Instead, each request carries the store of
+the server. The store holds namespaces, and each namespace maps string
+keys to string values. A lock protects the store. For every def, see the
+[State reference](/docs/reference/state#the-store).
+
+## Count something
+
+To count, call `Air.Store.incr` with the request, a namespace, and a key.
+It adds one and returns the new number, in one atomic step:
 
 ```python
+def visits.fin(n: U32) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text(U32.show(n)))
+
 def visits(req: Air.Request()) -> IO(Air.Response()):
-  IO.bind(U32, Air.Response(), Air.Store.incr(req, "app", "visits"), n => ...)
+  IO.bind(U32, Air.Response(), Air.Store.incr(req, "app", "visits"), visits.fin)
 ```
 
-`Air.Store.get`, `set`, `incr`, `read`, `drop`, and `update`, which
-replaces a namespace with a pure function of it and answers the result.
-Taking the value out is the lock, so keep that function quick: every
-other request waits on it. `Air.serve_shared` takes a store made with
-`Air.Store.new`, for a task outside the server that shares it. The
-framework uses the namespaces `rate`, `sessions` and `session_tally`.
+```bash
+curl localhost:8080/visits
+curl localhost:8080/visits
+```
+
+```text
+1
+2
+```
+
+## Read and write a value
+
+To write a value, call `Air.Store.set`. To read it, call `Air.Store.get`,
+which returns `""` when the key is absent:
+
+```python
+def save.fin(u: Unit) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("saved"))
+
+def save(req: Air.Request()) -> IO(Air.Response()):
+  +req = req
+  IO.bind(Unit, Air.Response(), Air.Store.set(req, "app", "motd", Air.Request.body(req)), save.fin)
+
+def motd(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(String, Air.Response(), Air.Store.get(req, "app", "motd"), m => IO.pure(Air.Response(), Air.Response.text(m)))
+```
+
+Values are strings. To store a number, convert it with `U32.show`, and
+parse the string when you read it. For a counter, use `Air.Store.incr`,
+which does both.
+
+## Change a namespace atomically
+
+To change more than one key in one step, call `Air.Store.update` with a
+pure function. Air gives the function the namespace, and it stores the
+result:
+
+```python
+def reset(m: Map<&2, String>) -> Map<&2, String>:
+  Map.set(&2, String, Map.set(&2, String, m, "visits", "0"), "motd", "")
+
+Air.Store.update(req, "app", reset)
+```
+
+<Callout type="warn">
+Keep the function short. Every other request waits for the lock while it
+runs.
+</Callout>
+
+`Air.Store.read` returns a whole namespace, and `Air.Store.drop` removes
+it.
+
+## Choose a namespace name
+
+Name the namespace after your feature, such as `app` or `status_plugin`.
+Air uses the namespaces `air`, `ready`, `config`, `rate`, `sessions`,
+`session_tally`, and `metrics`. Do not write to them.
+
+## Share the store with a background task
+
+By default, the server makes its own store. To give a task in `main` the
+same store as the handlers, make the store yourself and pass it to
+`Air.serve_shared`:
+
+```python
+def serve(store: Air.Store()) -> IO(Unit):
+  +store = store
+  do IO<Unit>:
+    switch : Air.Switch() <- Air.Switch.new()
+    IO.spawn(Unit, sweeper(1000000n, store))
+    Air.serve_shared(~app, Air.Limits.default(), Air.Timeouts.default(), store, switch, 8080)
+
+def main() -> IO(Unit):
+  IO.bind(Air.Store(), Unit, Air.Store.new(), serve)
+```
+
+A value that a do-block binds can be used only one time, so `main` gives
+the store to `serve`, which rebinds it with `+`. `Air.serve_shared` takes
+an app that receives the stop switch, such as
+`def app(switch: Air.Switch(), req: Air.Request())`.
+
+Here `sweeper` is your own task. It uses the store directly, not through a
+request. For an example, see
+[Run a readiness check in the background](/docs/guides/health#run-a-readiness-check-in-the-background).
+
+## Know the limits of the store
+
+- The store lives in the process. A restart removes all data.
+- Each process has its own store. Instances behind a load balancer do not
+  share data.
+- A request that no server made has no store. With such a request, reads
+  return `""` and writes do nothing. `Air.Test.inject` gives each request
+  a store.
+
+For data that must survive a restart, use a database.
+
+## Related
+
+- [State reference](/docs/reference/state)
+- [Add sessions](/docs/guides/sessions)
+- [Limit request rates](/docs/guides/rate-limiting)

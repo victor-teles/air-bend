@@ -1,20 +1,115 @@
 ---
-title: CORS and security headers
-description: Answer preflights and add defensive headers.
+title: Allow cross-origin requests and add security headers
+description: Let browsers on other origins call an Air app with Air.cors, and add defensive response headers such as nosniff, frame options, HSTS, and CSP with Air.shield.
 ---
 
-Two middleware ship with Air. `Air.cors(cfg)` answers preflights and
-adds `Access-Control-Allow-Origin` to responses for the origins the
-policy lists; `Air.Cors.any()` allows every origin and
-`Air.Cors.new(["https://app.example.com"])` an exact list. A request from
-any other origin passes through untouched and the browser refuses it.
-`Air.shield(hs)` adds defensive headers a handler has not set itself:
-`Air.Shield.default()` covers `nosniff`, framing, referrer and
-cross-origin isolation; HSTS and CSP are opt-in with `with_hsts` and
-`with_csp`, since Air runs behind a TLS proxy.
+This guide covers two middleware that set response headers for browsers.
+`Air.cors` lets pages on other origins call your app. `Air.shield` adds
+defensive headers to each response.
+
+## Allow cross-origin requests
+
+To let pages on other origins call your app, add `Air.cors` to
+`Air.use`, outside `Air.on_error`, so that error responses get the
+headers too:
 
 ```python
-Air.use([Air.request_id, Air.log, Air.shield(Air.Shield.default()), Air.cors(Air.Cors.any()), Air.on_error(render)], base)
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.use([
+    Air.cors(Air.Cors.new(["https://app.example.com"])),
+    Air.on_error(Air.Error.json(Air.Env.prod()))
+  ], base)(req)
 ```
 
-All go outside `on_error`, so an error response carries them too.
+`Air.cors` handles three kinds of requests:
+
+| Request | Result |
+| --- | --- |
+| No `Origin` header, or an origin that the policy does not list | The request goes on with no change. The browser blocks the response. |
+| A preflight: `OPTIONS` with `Access-Control-Request-Method`, from a listed origin | `Air.cors` responds with 204 and the CORS headers. The router does not run. |
+| Any other request from a listed origin | The request goes on. The response gets `access-control-allow-origin` and `vary: origin`. |
+
+## Choose the origins
+
+| Policy | Allows | `access-control-allow-origin` |
+| --- | --- | --- |
+| `Air.Cors.any()` | Every origin | `*` |
+| `Air.Cors.new(["https://app.example.com"])` | The listed origins, matched byte for byte | The origin of the request |
+
+<Callout type="warn">
+Do not pass an empty list to `Air.Cors.new`. An empty list allows every
+origin, the same as `Air.Cors.any()`.
+</Callout>
+
+## Set the CORS options
+
+| Def | Sets | Default |
+| --- | --- | --- |
+| `Air.Cors.with_methods(cfg, methods)` | `access-control-allow-methods` on a preflight | `GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS` |
+| `Air.Cors.with_headers(cfg, headers)` | `access-control-allow-headers` on a preflight | The headers that the preflight asks for |
+| `Air.Cors.with_expose(cfg, headers)` | `access-control-expose-headers` | None |
+| `Air.Cors.with_credentials(cfg, on)` | `access-control-allow-credentials: true` | Off |
+| `Air.Cors.with_max_age(cfg, seconds)` | `access-control-max-age` on a preflight | 600 |
+
+The lists are comma-separated strings, as they appear in the header:
+
+```python
+def cors_cfg() -> Air.Cors():
+  Air.Cors.with_expose(Air.Cors.with_credentials(Air.Cors.new(["https://app.example.com"]), True{}), "x-request-id")
+```
+
+Browsers refuse `*` with credentials. So when you turn on credentials,
+`Air.cors` sends the origin of the request back, also under
+`Air.Cors.any()`.
+
+## Add security headers
+
+To add defensive headers to each response, add `Air.shield` to
+`Air.use`, outside `Air.on_error`:
+
+```python
+Air.use([Air.shield(Air.Shield.default()), Air.on_error(Air.Error.plain(Air.Env.prod()))], base)
+```
+
+`Air.Shield.default()` sets these headers:
+
+| Header | Value |
+| --- | --- |
+| `x-content-type-options` | `nosniff` |
+| `x-frame-options` | `DENY` |
+| `referrer-policy` | `strict-origin-when-cross-origin` |
+| `cross-origin-opener-policy` | `same-origin` |
+| `cross-origin-resource-policy` | `same-origin` |
+| `x-permitted-cross-domain-policies` | `none` |
+
+`Air.shield` adds a header only when the response does not have it, so a
+header that your handler sets stays.
+
+## Change the security headers
+
+| Def | Effect |
+| --- | --- |
+| `Air.Shield.with_hsts(hs, seconds)` | Adds `strict-transport-security: max-age=<seconds>; includeSubDomains` |
+| `Air.Shield.with_csp(hs, policy)` | Adds `content-security-policy` |
+| `Air.Shield.with_frame(hs, value)` | Sets `x-frame-options` to `DENY` or `SAMEORIGIN` |
+| `Air.Shield.with_header(hs, name, value)` | Sets any header. It replaces a header with the same name. |
+
+```python
+def shield_cfg() -> Air.Shield():
+  Air.Shield.with_csp(Air.Shield.with_hsts(Air.Shield.default(), 31536000), "default-src 'self'")
+```
+
+<Callout type="warn">
+Turn on HSTS only when clients reach the app through HTTPS. Air serves
+plain HTTP behind a TLS proxy, and HSTS on a plain HTTP site locks
+browsers out.
+</Callout>
+
+HSTS and CSP are off by default for this reason, and because a CSP must
+match your pages.
+
+## Related
+
+- [Middleware reference](/docs/reference/middleware#cross-origin-requests-and-headers)
+- [Run Air in production](/docs/guides/deploy)
+- [Write middleware](/docs/guides/middleware)

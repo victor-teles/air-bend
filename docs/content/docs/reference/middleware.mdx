@@ -1,0 +1,264 @@
+---
+title: Middleware reference
+description: Every built-in middleware and hook, with its signature, the headers and statuses it adds, and where to put it.
+---
+
+This page lists the middleware and hooks that come with Air. A
+middleware runs before and after the handler that it wraps. You apply
+middleware to the whole app with `Air.use`, to a route list with
+`Air.Route.wrap`, or to one handler with a call such as
+`Air.rate(5, 60000, key)(handler)`. See the
+[Routing reference](/docs/reference/routing) for these defs.
+
+## Recommended order
+
+The first middleware in `Air.use` is the outermost. It runs first before
+the handler and last after the handler. This order works for most apps:
+
+```python
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.use([
+    Air.metrics,
+    Air.request_id,
+    Air.trace(Air.Trace.print),
+    Air.log,
+    Air.shield(Air.Shield.default()),
+    Air.cors(Air.Cors.any()),
+    Air.on_error(Air.Error.json(Air.Env.prod())),
+    Air.on_fail(report)
+  ], base)(req)
+```
+
+| Position | Middleware | Reason |
+| --- | --- | --- |
+| 1 | `Air.metrics` | Its time covers the whole chain. |
+| 2 | `Air.request_id` | Every later middleware and handler can read the id. |
+| 3 | `Air.trace` | It is inside `request_id` and outside `log`, so the log line gets the `trace_id` field. |
+| 4 | `Air.log` | It logs the final status, after `on_error` renders an error. |
+| 5 | `Air.shield` | It is outside `on_error`, so a rendered error gets the security headers. |
+| 6 | `Air.cors` | It is outside `on_error`, so a rendered error gets the CORS headers. |
+| 7 | `Air.on_error` | It renders every failed response from the middleware and handlers inside it. |
+| 8 | `Air.on_fail` | It is inside `on_error`, so it sees the error before `on_error` renders it. |
+
+Put `Air.session`, `Air.rate`, and the validation middleware on the route
+lists or handlers that need them, not on the whole app.
+
+## Catalog
+
+| Middleware | Adds to the request | Adds to the response | Can respond with | Guide |
+| --- | --- | --- | --- | --- |
+| `Air.request_id` | The `request_id` request local | `x-request-id` | Nothing | [Request ids and logging](/docs/guides/request-ids-and-logging) |
+| `Air.log` | Nothing | Nothing. It prints a line. | Nothing | [Request ids and logging](/docs/guides/request-ids-and-logging) |
+| `Air.cors(cfg)` | Nothing | `access-control-*`, `vary` | 204 to a preflight | [CORS and security headers](/docs/guides/cors-and-security-headers) |
+| `Air.shield(hs)` | Nothing | The security headers in `hs` | Nothing | [CORS and security headers](/docs/guides/cors-and-security-headers) |
+| `Air.rate(n, window_ms, key)` | Nothing | `x-ratelimit-*`, and `retry-after` on 429 | A failed 429 | [Rate limiting](/docs/guides/rate-limiting) |
+| `Air.session(cfg)` | The `session_id` and `session_cookie` request locals | `set-cookie` for a new session | Nothing | [Sessions](/docs/guides/sessions) |
+| `Air.validate_json(schema)` | Nothing | Nothing | A failed 400, or a 422 | [Validation](/docs/guides/validation) |
+| `Air.validate_query(schema)` | Nothing | Nothing | A 422 | [Validation](/docs/guides/validation) |
+| `Air.validate_params(schema)` | Nothing | Nothing | A 422 | [Validation](/docs/guides/validation) |
+| `Air.on_error(render)` | Nothing | The rendered error | The rendered error | [Errors](/docs/guides/errors) |
+| `Air.metrics` | Nothing | Nothing. It records the request in the store. | Nothing | [Metrics](/docs/guides/metrics) |
+| `Air.trace(exporter)` | The trace request locals | Nothing | Nothing | [Tracing](/docs/guides/tracing) |
+
+## Request ids and logs
+
+### Air.request_id
+
+```python
+def request_id(next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Gives each request an id. When the client sends an `X-Request-Id` of 1 to
+128 characters, and each character is a letter, a digit, `-`, `_`, or
+`.`, Air uses that id. Otherwise, Air makes an id of 16 hex characters.
+Handlers read the id with `Air.Request.id(req)`. The response gets the id
+in the `x-request-id` header.
+
+### Air.log
+
+```python
+def log(next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Prints one JSON line for each request, after the response is ready:
+
+```json
+{"ts":1790535040439,"id":"9be22d5900001c29","method":"GET","path":"/notes/1","status":200,"ms":0}
+```
+
+| Field | Value |
+| --- | --- |
+| `ts` | The start of the request, in milliseconds since the Unix epoch |
+| `id` | The `request_id` request local, or `""` without `Air.request_id` |
+| `trace_id` | The trace id. This field is present only when `Air.trace` runs outside `Air.log`. |
+| `method` | The request method |
+| `path` | The normal form of the request path |
+| `status` | The response status |
+| `ms` | The milliseconds that the inner chain took |
+
+`Air.log` does not log server refusals. The server prints its own line
+for them.
+
+## Cross-origin requests and headers
+
+### Air.cors
+
+```python
+def cors(cfg: Air.Cors(), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Applies the CORS policy `cfg`.
+
+| Request | Result |
+| --- | --- |
+| No `Origin` header, or an origin that the policy does not allow | The request goes to `next` with no change. The browser blocks the response. |
+| A preflight: `OPTIONS` with `Access-Control-Request-Method`, from an allowed origin | `Air.cors` responds with 204. The router does not run. |
+| Any other request from an allowed origin | The request goes to `next`. The response gets `access-control-allow-origin` and `vary: origin`. |
+
+For the `Air.Cors.*` options, see
+[CORS and security headers](/docs/guides/cors-and-security-headers).
+
+### Air.shield
+
+```python
+def shield(hs: Air.Shield(), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Adds each header in `hs` that the response does not already have. A
+header that the handler sets stays.
+
+## Limits and sessions
+
+### Air.rate
+
+```python
+def rate(+n: U32, +window_ms: U32, key: Air.Request() -> String, next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Lets `n` requests for each key in each window of `window_ms`
+milliseconds. The next request in the window gets a failed 429 response.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `n` | `U32` | The number of requests allowed in each window. |
+| `window_ms` | `U32` | The window length, in milliseconds. |
+| `key` | `Air.Request() -> String` | The def that names the bucket: `Air.Rate.by_ip(trust)`, `Air.Rate.by_header(name)`, or your own def. |
+
+Every response gets `x-ratelimit-limit`, `x-ratelimit-remaining`, and
+`x-ratelimit-reset` (seconds until the next window). The 429 also gets
+`retry-after` and the detail `rate limit: 6 of 5 per 60000 ms`.
+
+<Callout type="warn">
+All `Air.rate` middleware in an app share one count for each key. If you
+use two rate limits, give each one its own key prefix and the same
+`window_ms`.
+</Callout>
+
+### Air.session
+
+```python
+def session(+cfg: Air.Session(), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Gives each request a session. When the cookie names a live session, the
+request uses it. Otherwise, Air makes a new session, and the response
+sets the cookie. For the `Air.Session.*` defs, see the
+[State reference](/docs/reference/state).
+
+## Validation
+
+### Air.validate_json
+
+```python
+def validate_json(schema: Air.Schema(), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Checks the request body against `schema` before `next` runs.
+
+| Body | Result |
+| --- | --- |
+| The content type is not `application/json` or `+json`, or the body does not parse | A failed 400 with the detail `body is not JSON`. `Air.on_error` renders it. |
+| JSON that does not match the schema | A 422 with every problem. This response is not a failed response, so `Air.on_error` does not change it. |
+| JSON that matches | `next` runs. |
+
+```json
+{"status":422,"error":"Unprocessable Content","errors":["title: expected string","missing: done"]}
+```
+
+### Air.validate_query and Air.validate_params
+
+```python
+def validate_query(schema: Air.Schema(), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+def validate_params(schema: Air.Schema(), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Check the query parameters or the path parameters against an object
+schema. The values are strings, so the check is lenient: `"42"` matches
+`Air.Schema.int()`, `"true"` and `"false"` match `Air.Schema.boolean()`,
+and `""` matches `Air.Schema.null()`. A mismatch gets the same 422 as
+`Air.validate_json`. See the [Schema reference](/docs/reference/schema).
+
+## Errors
+
+### Air.on_error
+
+```python
+def on_error(render: Air.Render(), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Runs `next`. When the response is a failed response, `Air.on_error`
+renders it with `render`. The rendered response keeps the headers of the
+failed response, for example the `allow` header of a 405. See the
+[Errors reference](/docs/reference/errors).
+
+## Hooks
+
+A hook is a middleware that takes a function instead of `next`. The hook
+calls the rest of the chain for you, one time.
+
+| Hook | `f` receives | `f` returns | Runs |
+| --- | --- | --- | --- |
+| `Air.on_request(f)` | The request | A request | Before the rest of the chain. In `Air.use`, before routing. In `Air.Route.wrap`, after routing, with path parameters. |
+| `Air.on_send(f)` | The request and the response | A response, which Air sends | After the rest of the chain |
+| `Air.on_response(f)` | The request, the response, and the milliseconds | `Unit` | After the rest of the chain. The response does not change. |
+| `Air.on_fail(f)` | The request and the error | `Unit` | After the rest of the chain, only for a failed response. The response does not change. |
+
+```python
+def on_request(f: Air.Request() -> IO(Air.Request()), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+def on_send(f: Air.Request() -> Air.Response() -> IO(Air.Response()), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+def on_response(f: Air.Request() -> Air.Response() -> Nat -> IO(Unit), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+def on_fail(f: Air.Request() -> Air.Error() -> IO(Unit), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+All hooks run before the server writes the response. No app code runs
+after the write. See [Lifecycle hooks](/docs/guides/hooks).
+
+## Observability
+
+### Air.metrics
+
+```python
+def metrics(next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Counts each request by method, route pattern, and status, and records its
+duration, in the store. Serve the numbers with `Air.Metrics.expose`. See
+the [Observability reference](/docs/reference/observability).
+
+### Air.trace and Air.trace_sampled
+
+```python
+def trace(exporter: Air.Span() -> IO(Unit), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+def trace_sampled(every: U32, exporter: Air.Span() -> IO(Unit), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Continues the W3C trace in a valid `traceparent` header, or starts a new
+trace. Sets the request locals `trace_id`, `span_id`, `parent_id`,
+`trace_flags`, `traceparent`, and `tracestate`. After the response, gives
+one span to `exporter`. `Air.trace` samples every new trace.
+`Air.trace_sampled(10, exporter)` samples one new trace in 10.
+
+## Related
+
+- [Write middleware](/docs/guides/middleware)
+- [Routing reference](/docs/reference/routing)

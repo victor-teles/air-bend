@@ -1,4 +1,16 @@
 {
   "title": "Air",
-  "pages": ["index", "---Guides---", "...guides", "---Project---", "...project"]
+  "pages": [
+    "index",
+    "---Tutorial---",
+    "...tutorial",
+    "---Guides---",
+    "...guides",
+    "---Reference---",
+    "...reference",
+    "---Concepts---",
+    "...concepts",
+    "---Project---",
+    "...project"
+  ]
 }

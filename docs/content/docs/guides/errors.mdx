@@ -1,31 +1,132 @@
 ---
-title: Errors
-description: Errors are values a handler returns.
+title: Handle errors
+description: Return errors from Air handlers as values, render them as text or JSON with on_error, show details in dev mode, and handle effects that can fail.
 ---
 
-Bend has no exceptions, so an error is a value a handler returns:
+Bend has no exceptions. In Air, a handler returns an error as a value,
+and the `Air.on_error` middleware renders it into the response that the
+client gets. This guide shows how to return, render, and observe errors.
+For every constructor and renderer, see the
+[Errors reference](/docs/reference/errors).
+
+## Return an error
+
+To return an error, call `Air.fail` with an error constructor. The
+constructor takes a detail for the developer:
 
 ```python
 def show(req: Air.Request()) -> IO(Air.Response()):
   Air.fail(Air.Error.not_found("no such user"))
 ```
 
-`Air.on_error(render)` is the middleware that turns it into the response
-the client sees. Two renderers ship: `Air.Error.plain(env)` for text and
-`Air.Error.json(env)` for `{"status":404,"error":"Not Found"}`. The
-router's own 404 and 405 pass through it too, and a rendered error keeps
-the headers of the failure it came from, such as the `Allow` of a 405 or
-a cookie a middleware set. With `AIR_ENV=dev` (read
-by `Air.Env.from_env()`) they add the route and the detail; in prod the
-detail never leaves the process, and an app without `on_error` gets the
-same prod rendering from the server.
+The constructors include `bad_request` (400), `unauthorized` (401),
+`forbidden` (403), `not_found` (404), `conflict` (409), `unprocessable`
+(422), and `internal` (500). For any other status, use
+`Air.Error.other(status, detail)`.
 
-A fallible effect in a handler goes through `Air.attempt`, which turns
-its failure into a 500 with the message as detail. Never `IO.try` or
-`IO.die` in a handler: both end the process, and nothing can catch them.
-A runtime crash cannot be caught either.
+## Render errors
 
-The server's own refusals (a bad request line, a limit, the 503 on
-timeout) happen before the app runs and do not pass through `on_error`.
-A response cannot be sent twice: a handler returns one value and the
-server owns the socket, so there is no guard to add.
+To render errors, add `Air.on_error` to `Air.use` with a renderer:
+
+```python
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.use([Air.on_error(Air.Error.json(Air.Env.prod()))], base)(req)
+```
+
+```bash
+curl -i localhost:8080/users/9
+```
+
+```text
+HTTP/1.1 404 Not Found
+connection: keep-alive
+content-type: application/json
+content-length: 34
+
+{"status":404,"error":"Not Found"}
+```
+
+`Air.Error.plain` renders the reason phrase as plain text instead.
+`Air.on_error` also renders the 404 and 405 responses of `Air.dispatch`.
+The rendered response keeps the headers of the failed response, such as
+the `allow` header of a 405 or a cookie that a middleware set.
+
+Without `Air.on_error`, the server renders a failed response as the
+reason phrase in plain text.
+
+## Show error details in development
+
+The detail of an error never reaches the client in `prod` mode. To see
+the detail and the path while you develop, read the mode from `AIR_ENV`:
+
+```python
+def app.fin(req: Air.Request(), env: Air.Env()) -> IO(Air.Response()):
+  Air.use([Air.on_error(Air.Error.json(env))], base)(req)
+
+def app(req: Air.Request()) -> IO(Air.Response()):
+  IO.bind(Air.Env(), Air.Response(), Air.Env.from_env(), app.fin(req))
+```
+
+```bash
+AIR_ENV=dev bend main.bend
+```
+
+```json
+{"status":404,"error":"Not Found","detail":"no such user","path":"/users/9"}
+```
+
+The app is a closed template, so it reads the mode for each request, not
+one time in `main`.
+
+## Handle an effect that can fail
+
+Some effects return a `Result`, such as `IO.get_env`. To use one in a
+handler, call `Air.attempt`. When the effect fails, `Air.attempt` returns
+a failed 500 response with the message of the effect as the detail:
+
+```python
+def env.fin(home: String) -> IO(Air.Response()):
+  IO.pure(Air.Response(), Air.Response.text("home is " ++ home))
+
+def env(req: Air.Request()) -> IO(Air.Response()):
+  Air.attempt(String, IO.get_env("HOME"), env.fin)
+```
+
+<Callout type="warn">
+Do not call `IO.try` or `IO.die` in a handler. Both end the process, and
+no middleware can stop them. A runtime crash also ends the process.
+</Callout>
+
+## Report errors
+
+To count or log errors without changing the response, add `Air.on_fail`
+inside `Air.on_error`:
+
+```python
+def report(req: Air.Request(), e: Air.Error()) -> IO(Unit):
+  IO.print("failed: " ++ U32.show(Air.Error.status(e)) ++ " " ++ Air.Error.detail(e))
+
+def app(req: Air.Request()) -> IO(Air.Response()):
+  Air.use([Air.on_error(Air.Error.plain(Air.Env.prod())), Air.on_fail(report)], base)(req)
+```
+
+`Air.on_fail` must be after `Air.on_error` in the list. Then it sees the
+error before `Air.on_error` renders it.
+
+## Errors that Air.on_error does not render
+
+- **Server refusals.** The server responds to a bad request line, a
+  request over a limit, and an app timeout (503) before the app runs, or
+  instead of the app. These responses are the reason phrase in plain text.
+- **The 422 of validation.** `Air.validate_json` responds with 422 and a
+  list of problems. This response is not a failed response, so the client
+  gets the list in `prod` mode too.
+
+A response is sent only one time. The handler returns one value, and the
+server owns the socket, so you do not need a guard against a second send.
+
+## Related
+
+- [Errors reference](/docs/reference/errors)
+- [Lifecycle hooks](/docs/guides/hooks)
+- [Validate requests](/docs/guides/validation)

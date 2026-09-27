@@ -1,0 +1,147 @@
+---
+title: JSON and templates reference
+description: The Air JSON value, its parser, renderer, builders, and accessors, and the template tags of View.render.
+---
+
+This page lists the defs for JSON values and for templates. Every
+accessor is total: it returns `None` or `[]` for the wrong kind of value.
+
+## The JSON value
+
+`Air.Json()` is a JSON value. Air keeps these properties of a value:
+
+- A number keeps its text as written, so `2.50` stays `2.50`.
+- An object keeps its fields in order, and it can have two fields with the
+  same key.
+
+To match on the constructors of a value, import `air/lib/json.bend`
+directly. The facade exports only the defs in this page.
+
+## Parse and render
+
+### Air.Json.parse
+
+```python
+def Json.parse(text: String) -> Maybe<&2, Air.Json()>
+```
+
+Returns the value in `text`, or `None` when `text` is not one JSON value.
+Air allows space around the value, and it decodes `\u` escapes.
+
+| Text | Result |
+| --- | --- |
+| ` {"a": [1, 2.50, -0, 1e3], "b": null, "a": true} ` | `Some({"a":[1,2.50,-0,1e3],"b":null,"a":true})` |
+| `"é\/\n"` | `Some("é/\n")` |
+| `01` | `None`. A leading zero is not allowed. |
+| `[1,]` | `None`. A trailing comma is not allowed. |
+| `{} x` | `None`. Text after the value is not allowed. |
+
+### Air.Json.render
+
+```python
+def Json.render(v: Air.Json()) -> String
+```
+
+Returns the value as compact JSON with no spaces. In strings, it escapes
+`"`, `\`, and control characters, such as `\n`, `\t`, and `\u0001`. It
+does not escape `/`, `<`, or characters outside ASCII.
+
+## Build values
+
+| Def | Returns |
+| --- | --- |
+| `Air.Json.null()` | `null` |
+| `Air.Json.of_bool(b)` | `true` or `false` |
+| `Air.Json.of_u32(n)` | A number from a `U32` |
+| `Air.Json.num(text)` | A number with the text `text`, such as `-1.5e3` |
+| `Air.Json.of_str(s)` | A string |
+| `Air.Json.arr(items)` | An array of `List<&2, Air.Json()>` |
+| `Air.Json.obj(fields)` | An object of `List<&2, Air.Json.Field()>` |
+| `Air.Json.field(key, v)` | One field for `Air.Json.obj` |
+
+<Callout type="warn">
+`Air.Json.num` does not check its text. Pass it only text that is a valid
+JSON number, or the output is not valid JSON.
+</Callout>
+
+```python
+Air.Json.obj([
+  Air.Json.field("id", Air.Json.of_u32(7)),
+  Air.Json.field("title", Air.Json.of_str("Buy milk")),
+  Air.Json.field("tags", Air.Json.arr([Air.Json.of_str("home")]))
+])
+```
+
+```json
+{"id":7,"title":"Buy milk","tags":["home"]}
+```
+
+## Read values
+
+| Def | Returns |
+| --- | --- |
+| `Air.Json.get(v, key)` | `Some` of the first field named `key` of an object, else `None` |
+| `Air.Json.at(v, i)` | `Some` of item `i` (a `Nat`, from `0n`) of an array, else `None` |
+| `Air.Json.str(v)` | `Some` of a string, else `None` |
+| `Air.Json.u32(v)` | `Some` of a number with only digits, up to 4294967289, else `None` |
+| `Air.Json.boolean(v)` | `Some` of a boolean, else `None` |
+| `Air.Json.is_null(v)` | `True{}` for `null` |
+| `Air.Json.items(v)` | The items of an array, else `[]` |
+| `Air.Json.fields(v)` | The fields of an object, else `[]` |
+
+| Number text | `Air.Json.u32` |
+| --- | --- |
+| `007` | `Some(7)` |
+| `4294967289` | `Some(4294967289)` |
+| `4294967290` and more | `None` |
+| `1.0`, `-1` | `None` |
+
+## Templates
+
+### Air.View.render
+
+```python
+def View.render(+template: String, ctx: Air.Json()) -> String
+```
+
+Renders `template` against the JSON value `ctx`, with a subset of
+Mustache. `Air.Response.view(template, ctx)` returns the result as an HTML
+response. A malformed template never fails: Air renders what it can and
+keeps the rest as text.
+
+| Tag | Renders |
+| --- | --- |
+| `{{name}}` | The value, HTML-escaped. |
+| `{{{name}}}` | The value, not escaped. |
+| `{{#name}}...{{/name}}` | The block one time for each item of an array. For any other truthy value, the block one time with that value as the context. Nothing for a falsy value. |
+| `{{^name}}...{{/name}}` | The block one time when the value is falsy, an empty array, or missing. |
+| `{{.}}` | The current item. |
+| `{{! note }}` | Nothing. |
+
+Rules:
+
+- `{{name}}` escapes `&`, `<`, `>`, `"`, and `'`.
+- Names can be dotted, such as `{{user.name}}`. Spaces inside a tag are
+  ignored.
+- A block over a list can read the fields of the outer context.
+- A missing name, an object, and an array render as `""`. `false`
+  renders as `false`, and a number renders as its text.
+- The falsy values are `false`, `null`, `""`, `[]`, `0`, and a missing
+  name. `{}` and `0.0` are truthy.
+- There are no partials and no `{{& name}}` tag.
+
+For the context `{"name":"<Ada>","items":["a",2],"title":"T"}`:
+
+| Template | Output |
+| --- | --- |
+| `{{name}}` | `&lt;Ada&gt;` |
+| `{{{name}}}` | `<Ada>` |
+| `{{#items}}<{{.}}:{{title}}>{{/items}}` | `<a:T><2:T>` |
+| `{{^missing}}none{{/missing}}` | `none` |
+
+## Related
+
+- [Render templates](/docs/guides/templates)
+- [Response reference](/docs/reference/response): `Air.Response.of_json` and `Air.Response.view`
+- [Request reference](/docs/reference/request): `Air.Request.json`
+- [Schema reference](/docs/reference/schema)

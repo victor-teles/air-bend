@@ -1,0 +1,197 @@
+---
+title: Observability reference
+description: The Air defs for Prometheus metrics, W3C tracing and spans, the log line, and the wall clock, with every metric name, label, and span field.
+---
+
+This page lists the defs that report what an Air app does: metrics,
+traces, and the log line. For examples by task, see
+[Expose metrics](/docs/guides/metrics),
+[Trace requests](/docs/guides/tracing), and
+[Add request ids and logs](/docs/guides/request-ids-and-logging).
+
+## Metrics
+
+### Air.metrics
+
+```python
+def metrics(next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+A middleware that counts each request and records its duration in the
+`metrics` namespace of the store. Put it first in `Air.use`, so that its
+time covers the whole chain. It can go before or after `Air.on_error`,
+because a failed response has its status before `Air.on_error` renders it.
+
+### Air.Metrics.expose
+
+```python
+def Metrics.expose(req: Air.Request()) -> IO(Air.Response())
+```
+
+A handler that responds with the metrics in the Prometheus text format.
+The output names every route, so serve it on an internal path or behind
+an auth middleware.
+
+### Air.Metrics.count
+
+```python
+def Metrics.count(req: Air.Request(), name: String) -> IO(Unit)
+```
+
+Adds one to the counter `app_<name>_total`. The name must match
+`[a-z0-9_]+`. For any other name, the def does nothing. App counters have
+no labels.
+
+### Metric names
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `air_http_requests_total` | counter | `method`, `route`, `status` |
+| `air_http_request_duration_seconds` | histogram | `route` |
+| `app_<name>_total` | counter | None |
+
+| Label | Value |
+| --- | --- |
+| `method` | `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH`, or `OPTIONS`. Any other method is `OTHER`, so that a client cannot add series. |
+| `route` | The pattern of the route that ran, with its mount prefix, such as `/admin/users/:id`. The value is `""` when no route ran. Examples: a 404, a 405, an automatic `OPTIONS` response, or a CORS preflight from `Air.cors`. |
+| `status` | The status of the response. |
+
+The histogram buckets are the Prometheus client defaults: 0.005, 0.01,
+0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, and 10 seconds, and `+Inf`. Air
+measures durations in whole milliseconds. Air sorts the series by key.
+
+```text
+# HELP air_http_requests_total Requests answered, by method, route and status.
+# TYPE air_http_requests_total counter
+air_http_requests_total{method="GET",route="/hello/:name",status="200"} 12
+# HELP air_http_request_duration_seconds Time in the app, from the middleware's view.
+# TYPE air_http_request_duration_seconds histogram
+air_http_request_duration_seconds_bucket{route="/hello/:name",le="0.005"} 10
+air_http_request_duration_seconds_bucket{route="/hello/:name",le="+Inf"} 12
+air_http_request_duration_seconds_sum{route="/hello/:name"} 0.042
+air_http_request_duration_seconds_count{route="/hello/:name"} 12
+```
+
+Air does not count server refusals, because the app does not run for
+them. The counts reset when the process restarts, and each process has
+its own counts.
+
+## Tracing
+
+### Air.trace
+
+```python
+def trace(exporter: Air.Span() -> IO(Unit), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+A middleware for W3C trace context. When the request has a valid
+`traceparent` header, `Air.trace` continues that trace. Otherwise, it
+starts a new trace. After the response is ready, it gives one span to
+`exporter` when the sampled flag is set. `Air.trace` samples every new trace.
+
+A valid `traceparent` has four fields: `00-<trace id>-<parent id>-<flags>`.
+
+| Field | Rule |
+| --- | --- |
+| Version | Two lowercase hex digits, not `ff`. Version `00` has exactly four fields. A later version can have more fields, and Air ignores them. |
+| Trace id | 32 lowercase hex digits, not all zeros |
+| Parent id | 16 lowercase hex digits, not all zeros |
+| Flags | Two hex digits. The low bit is the sampled flag. |
+
+### Air.trace_sampled
+
+```python
+def trace_sampled(every: U32, exporter: Air.Span() -> IO(Unit), next: Air.Handler(), req: Air.Request()) -> IO(Air.Response())
+```
+
+Works like `Air.trace`, and samples one new trace in `every`. The last
+eight hex digits of the trace id decide, so all services that sample this
+way make the same choice for a trace. An `every` of 0 samples no new
+trace, and 1 samples every new trace. A continued trace uses the sampled
+flag of the caller. Every request gets ids, also when Air does not sample it.
+
+### Trace request locals
+
+`Air.trace` sets these request locals before the handler runs:
+
+| Request local | Value |
+| --- | --- |
+| `trace_id` | 32 hex digits: the caller's trace id, or a new random one |
+| `span_id` | 16 random hex digits: the span of this request |
+| `parent_id` | The caller's span id, or `""` for a new trace |
+| `trace_flags` | `01` when sampled, `00` when not |
+| `traceparent` | The value to send to a service that you call: `00-<trace_id>-<span_id>-<trace_flags>` |
+| `tracestate` | The caller's `tracestate` header, with no change |
+
+### Exporters
+
+An exporter is any def of type `Air.Span() -> IO(Unit)`.
+
+| Def | Effect |
+| --- | --- |
+| `Air.Trace.print(s)` | Prints the span as one JSON line on stdout. |
+| `Air.Trace.drop(s)` | Does nothing. The ids still go to handlers and to the log. |
+| `Air.Trace.json(s)` | Returns the JSON line of the span as a `String`. |
+
+The JSON line uses the OpenTelemetry names for HTTP attributes:
+
+```json
+{"trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"a1b2c3d4e5f60718","parent_span_id":"00f067aa0ba902b7","name":"GET /users/:id","start_time_unix_ms":1790000000000,"duration_ms":3,"http.request.method":"GET","http.route":"/users/:id","url.path":"/users/7","http.response.status_code":200}
+```
+
+### Spans
+
+`Air.Span()` is one span. Each field has an accessor, such as
+`Air.Span.trace_id(s)`.
+
+| Field | Type | Value |
+| --- | --- | --- |
+| `trace_id` | `String` | The trace id |
+| `span_id` | `String` | The span id |
+| `parent_id` | `String` | The parent span id, or `""` for a new trace |
+| `name` | `String` | The method and the route pattern, such as `GET /users/:id`, or the method alone when no route ran |
+| `start_ms` | `String` | The start, in milliseconds since the Unix epoch, as text |
+| `duration_ms` | `U32` | The milliseconds that the inner chain took |
+| `status` | `U32` | The status of the response |
+| `method` | `String` | The request method |
+| `route` | `String` | The route pattern, or `""` |
+| `path` | `String` | The request path |
+
+To make a span for your own work, call `Air.Span.new` with the ten fields
+in the order of the table:
+
+```python
+Air.Span.new(trace_id, span_id, parent_id, "load user", start_ms, 3, 200, "GET", "/users/:id", "/users/7")
+```
+
+## The log line
+
+`Air.log` prints one JSON line for each request. For the fields, see
+[Air.log](/docs/reference/middleware#airlog).
+
+## Wall clock
+
+### Air.Clock.wall_ms
+
+```python
+def Clock.wall_ms() -> IO(String)
+```
+
+Returns the milliseconds since the Unix epoch, as decimal text. The value
+does not fit in a `U32`, so it is text. `IO.now` counts from the start of
+the process instead.
+
+The wall clock is a custom effect with host code in C and JavaScript.
+When a program uses it, Bend prints this message before it runs the
+program. You can ignore the message:
+
+```text
+All terms check, but 1 def relies on unsafe or foreign code:
+- main
+```
+
+## Related
+
+- [Expose metrics](/docs/guides/metrics)
+- [Trace requests](/docs/guides/tracing)
+- [Add request ids and logs](/docs/guides/request-ids-and-logging)
